@@ -1,0 +1,253 @@
+from typing import List, Dict, Set, Optional, Tuple
+from collections import defaultdict
+import time
+from app.models.domain import Signal, Cable, AllocatedSlot, AllocResult
+from app.models.rules import RuleSetConfig
+from app.engine.naming import NameGenerator
+from app.engine.checker import IndependentChecker
+
+class BaselineEngine:
+    def __init__(self, rules: RuleSetConfig):
+        self.rules = rules
+        self.name_gen = NameGenerator(rules.naming_patterns)
+        self.checker = IndependentChecker(rules)
+
+    def run_b0_file_order(self, signals: List[Signal], cable_sizes: Dict[str, int]) -> AllocResult:
+        """
+        B0 Baseline: Naive greedy in raw file order.
+        Fills slots sequentially without respecting cable blocks or A/B segregation.
+        """
+        start_time = time.time()
+        allocations: List[AllocatedSlot] = []
+
+        cab = 0
+        cioc = 0
+        bp = 0
+        slot = 0
+
+        charm_lookup = self.rules.signal_type_lookup.mapping
+        isolated_subtypes = set(self.rules.isolated_charm.isolated_subtypes)
+
+        for s in signals:
+            cab_name, cioc_name, bp_name = self.name_gen.get_names(cab, cioc, bp)
+            
+            # Lookup charm
+            key = s.io_type
+            if s.io_type == "DO" and s.subtype in isolated_subtypes:
+                key = "DO_ISOLATED"
+            hw = charm_lookup.get(key)
+            charm_name = hw.charm if hw else f"{s.io_type} CHARM"
+            tb_name = hw.terminal_block if hw else "Standard TB"
+
+            alloc = AllocatedSlot(
+                tag=s.tag,
+                cable=s.cable,
+                pair=s.pair,
+                cabinet=cab,
+                cioc=cioc,
+                baseplate=bp,
+                slot=slot,
+                global_slot=cab * 384 + cioc * 96 + bp * 12 + slot,
+                cabinet_name=cab_name,
+                cioc_name=cioc_name,
+                baseplate_name=bp_name,
+                charm=charm_name,
+                terminal_block=tb_name,
+                io_type=s.io_type,
+                subtype=s.subtype,
+                group=s.group,
+                seg=s.seg,
+                is_spare=False
+            )
+            allocations.append(alloc)
+
+            # Advance slot
+            slot += 1
+            if slot >= 12:
+                slot = 0
+                bp += 1
+                if bp >= 8:
+                    bp = 0
+                    cioc += 1
+                    if cioc >= 4:
+                        cioc = 0
+                        cab += 1
+
+        cabinets_used = cab + 1 if allocations else 0
+        violations = self.checker.verify(allocations, signals)
+        runtime = time.time() - start_time
+
+        lower_bound = max(1, (len(signals) + 344) // 345)
+
+        return AllocResult(
+            success=True,
+            allocations=allocations,
+            violations=violations,
+            cabinets_used=cabinets_used,
+            slots_used=len(allocations),
+            total_slots_available=cabinets_used * 384,
+            coverage_pct=100.0,
+            spare_pct_actual=round(100.0 * (1.0 - len(allocations) / (cabinets_used * 384)), 1) if cabinets_used else 0.0,
+            runtime_s=round(runtime, 3),
+            lower_bound_cabinets=lower_bound,
+            solver_status="GREEDY_B0"
+        )
+
+    def run_b1_grouped_ab(self, signals: List[Signal], cable_sizes: Dict[str, int]) -> AllocResult:
+        """
+        B1 Baseline: Heuristic greedy by group and A/B aware.
+        Places cable blocks into CIOCs, but lacks global optimization.
+        """
+        start_time = time.time()
+        
+        # Build cable blocks
+        cables_dict: Dict[str, Cable] = {}
+        for s in signals:
+            if s.cable not in cables_dict:
+                size = cable_sizes.get(s.cable, 24 if s.pair > 12 else 12 if s.pair > 6 else 6 if s.pair > 2 else 2)
+                cables_dict[s.cable] = Cable(id=s.cable, size=size, group=s.group)
+            cables_dict[s.cable].signals.append(s)
+            if s.seg:
+                cables_dict[s.cable].segs.add(s.seg)
+
+        cable_list = list(cables_dict.values())
+        # Sort by group, then segregation
+        cable_list.sort(key=lambda c: (c.group or "", sorted(list(c.segs))[0] if c.segs else ""))
+
+        # State tracking: CIOCs
+        # 1 Cabinet = 4 CIOCs (96 slots each)
+        max_cab_cap = int(384 * (1.0 - (self.rules.spare_capacity.spare_percentage / 100.0)))
+        
+        # Grid of CIOC slot occupancies: (cab, cioc) -> current slot offset (0..96), train_seg (None, 'A', 'B')
+        cioc_offset: Dict[Tuple[int, int], int] = defaultdict(int)
+        cioc_train: Dict[Tuple[int, int], Optional[str]] = defaultdict(lambda: None)
+        cab_used: Dict[int, int] = defaultdict(int)
+        group_cab_map: Dict[str, int] = {}
+
+        allocations: List[AllocatedSlot] = []
+        charm_lookup = self.rules.signal_type_lookup.mapping
+        isolated_subtypes = set(self.rules.isolated_charm.isolated_subtypes)
+
+        for cbl in cable_list:
+            cbl_seg = list(cbl.segs)[0] if cbl.segs else None
+            cbl_grp = cbl.group
+
+            # Target cabinet
+            target_cab = None
+            if cbl_grp and cbl_grp in group_cab_map:
+                target_cab = group_cab_map[cbl_grp]
+
+            placed = False
+            # Try to place in target_cab first, or find new cabinet
+            cabs_to_try = [target_cab] if target_cab is not None else list(range(100))
+
+            for cab in cabs_to_try:
+                if cab is None:
+                    continue
+                # Check cabinet capacity
+                if cab_used[cab] + cbl.size > max_cab_cap:
+                    continue
+
+                # Try CIOCs in this cabinet
+                for cioc in range(4):
+                    curr_train = cioc_train[(cab, cioc)]
+                    # Segregation check
+                    if cbl_seg and curr_train and curr_train != cbl_seg:
+                        continue
+
+                    curr_off = cioc_offset[(cab, cioc)]
+                    # Baseplate boundary alignment for 24 and 12-pair
+                    aligned_off = curr_off
+                    if cbl.size in [12, 24]:
+                        if aligned_off % 12 != 0:
+                            aligned_off += (12 - (aligned_off % 12))
+
+                    if aligned_off + cbl.size <= 96:
+                        # Place cable here!
+                        if cbl_grp and cbl_grp not in group_cab_map:
+                            group_cab_map[cbl_grp] = cab
+
+                        if cbl_seg:
+                            cioc_train[(cab, cioc)] = cbl_seg
+
+                        sig_map = {s.pair: s for s in cbl.signals}
+                        for p in range(1, cbl.size + 1):
+                            slot_in_cioc = aligned_off + (p - 1)
+                            bp = slot_in_cioc // 12
+                            sl = slot_in_cioc % 12
+                            cab_name, cioc_name, bp_name = self.name_gen.get_names(cab, cioc, bp)
+
+                            s = sig_map.get(p)
+                            if s:
+                                key = s.io_type
+                                if s.io_type == "DO" and s.subtype in isolated_subtypes:
+                                    key = "DO_ISOLATED"
+                                hw = charm_lookup.get(key)
+                                charm_name = hw.charm if hw else f"{s.io_type} CHARM"
+                                tb_name = hw.terminal_block if hw else "Standard TB"
+
+                                alloc = AllocatedSlot(
+                                    tag=s.tag,
+                                    cable=s.cable,
+                                    pair=p,
+                                    cabinet=cab,
+                                    cioc=cioc,
+                                    baseplate=bp,
+                                    slot=sl,
+                                    global_slot=cab * 384 + cioc * 96 + bp * 12 + sl,
+                                    cabinet_name=cab_name,
+                                    cioc_name=cioc_name,
+                                    baseplate_name=bp_name,
+                                    charm=charm_name,
+                                    terminal_block=tb_name,
+                                    io_type=s.io_type,
+                                    subtype=s.subtype,
+                                    group=s.group,
+                                    seg=s.seg,
+                                    is_spare=False
+                                )
+                            else:
+                                alloc = AllocatedSlot(
+                                    tag=None,
+                                    cable=cbl.id,
+                                    pair=p,
+                                    cabinet=cab,
+                                    cioc=cioc,
+                                    baseplate=bp,
+                                    slot=sl,
+                                    global_slot=cab * 384 + cioc * 96 + bp * 12 + sl,
+                                    cabinet_name=cab_name,
+                                    cioc_name=cioc_name,
+                                    baseplate_name=bp_name,
+                                    charm="SPARE CHARM",
+                                    terminal_block="SPARE TB",
+                                    is_spare=True
+                                )
+                            allocations.append(alloc)
+
+                        cioc_offset[(cab, cioc)] = aligned_off + cbl.size
+                        cab_used[cab] += cbl.size
+                        placed = True
+                        break
+
+                if placed:
+                    break
+
+        cabinets_used = max([s.cabinet for s in allocations], default=-1) + 1
+        violations = self.checker.verify(allocations, signals)
+        runtime = time.time() - start_time
+        lower_bound = max(1, (len(signals) + 344) // 345)
+
+        return AllocResult(
+            success=True,
+            allocations=allocations,
+            violations=violations,
+            cabinets_used=cabinets_used,
+            slots_used=len([s for s in allocations if not s.is_spare]),
+            total_slots_available=cabinets_used * 384,
+            coverage_pct=100.0,
+            spare_pct_actual=round(100.0 * (1.0 - len(allocations) / (cabinets_used * 384)), 1) if cabinets_used else 0.0,
+            runtime_s=round(runtime, 3),
+            lower_bound_cabinets=lower_bound,
+            solver_status="GREEDY_B1"
+        )

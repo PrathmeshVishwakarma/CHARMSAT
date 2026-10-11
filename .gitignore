@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build artifacts
+frontend/dist/
+dist/
+build/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Testing & Linters
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Local databases & logs
+*.db
+*.log
+.system_generated/
+
+# OS metadata
+.DS_Store
+Thumbs.db

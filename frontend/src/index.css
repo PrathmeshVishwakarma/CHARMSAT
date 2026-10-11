@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #060D08;
+    color: #E2ECE5;
+    background-image: 
+      radial-gradient(circle at 50% 0%, rgba(74, 222, 128, 0.08) 0%, transparent 70%),
+      linear-gradient(rgba(30, 58, 43, 0.15) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(30, 58, 43, 0.15) 1px, transparent 1px);
+    background-size: 100% 100%, 32px 32px, 32px 32px;
+  }
+}
+
+/* Custom Cyber Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #060D08;
+}
+::-webkit-scrollbar-thumb {
+  background: #1E3A2B;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4ADE80;
+}
+
+.glow-box {
+  box-shadow: 0 0 15px rgba(74, 222, 128, 0.2);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+}
+
+.glow-box-amber {
+  box-shadow: 0 0 15px rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+
+.glow-box-red {
+  box-shadow: 0 0 15px rgba(248, 113, 113, 0.2);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.scanline {
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,0),
+    rgba(255,255,255,0) 50%,
+    rgba(0, 0, 0, 0.25) 50%,
+    rgba(0, 0, 0, 0.25)
+  );
+  background-size: 100% 4px;
+}
