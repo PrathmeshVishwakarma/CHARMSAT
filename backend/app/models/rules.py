@@ -66,11 +66,14 @@ class RuleNamingPatternsConfig(BaseModel):
     id: str = "RULE-07"
     name: str = "Asset Naming Patterns"
     enabled: bool = True
-    cabinet_pattern: str = "CAB-{cab:02d}"
-    cioc_pattern: str = "{cab_name}-CIOC-{cioc:02d}"
-    cioc_no_format: Literal["hierarchical", "numeric_3digit", "deltav_ar1"] = "deltav_ar1"
-    baseplate_pattern: str = "{cioc_no}-CBP-{bp}"
-    description: str = "Resolves naming ambiguities (e.g. DeltaV AR1CIOC vs 001-CBP-1) with parameterized template patterns."
+    # Token patterns (P1-6; tokens documented in engine/naming.py).
+    # Defaults reproduce both PS examples (blueprint 7.4).
+    cabinet: str = "CAB-{cab:02}"
+    cioc: str = "AR{area}CIOC{cab}{cioc_global:05}"
+    baseplate: str = "{cioc_global:03}-CBP-{bp}"
+    charm: str = "{baseplate_name}-{slot:02}"
+    area: str = "1"
+    description: str = "Token-based asset naming. Tokens: area, cab, cioc, cioc_global, bp, bp_global, slot, cab_name, cioc_name, baseplate_name. Unknown tokens are rejected at load."
 
 class GenericRuleConfig(BaseModel):
     id: str

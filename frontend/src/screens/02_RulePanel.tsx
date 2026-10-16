@@ -340,46 +340,74 @@ export const ScreenRulePanel: React.FC<RulePanelProps> = ({ onRulesChanged }) =>
                 <label className="text-[10px] text-[#6B8E78] block mb-1">Cabinet Pattern</label>
                 <input
                   type="text"
-                  value={rules.naming_patterns.cabinet_pattern}
+                  value={rules.naming_patterns.cabinet}
                   onChange={(e) =>
                     setRules({
                       ...rules,
-                      naming_patterns: { ...rules.naming_patterns, cabinet_pattern: e.target.value },
+                      naming_patterns: { ...rules.naming_patterns, cabinet: e.target.value },
                     })
                   }
                   className="bg-[#0C1A11] border border-[#1E3E2B] rounded px-2.5 py-1 text-white text-xs w-full"
                 />
               </div>
               <div>
-                <label className="text-[10px] text-[#6B8E78] block mb-1">CIOC Format Ambiguity</label>
-                <select
-                  value={rules.naming_patterns.cioc_no_format}
+                <label className="text-[10px] text-[#6B8E78] block mb-1">CIOC Pattern</label>
+                <input
+                  type="text"
+                  value={rules.naming_patterns.cioc}
                   onChange={(e) =>
                     setRules({
                       ...rules,
-                      naming_patterns: { ...rules.naming_patterns, cioc_no_format: e.target.value },
+                      naming_patterns: { ...rules.naming_patterns, cioc: e.target.value },
                     })
                   }
                   className="bg-[#0C1A11] border border-[#1E3E2B] rounded px-2.5 py-1 text-white text-xs w-full"
-                >
-                  <option value="deltav_ar1">DeltaV AR1CIOC (AR1CIOC10101)</option>
-                  <option value="numeric_3digit">Numeric 3-Digit (001-CBP-1)</option>
-                  <option value="hierarchical">Hierarchical (CAB-01-C01)</option>
-                </select>
+                />
               </div>
               <div>
                 <label className="text-[10px] text-[#6B8E78] block mb-1">Baseplate Pattern</label>
                 <input
                   type="text"
-                  value={rules.naming_patterns.baseplate_pattern}
+                  value={rules.naming_patterns.baseplate}
                   onChange={(e) =>
                     setRules({
                       ...rules,
-                      naming_patterns: { ...rules.naming_patterns, baseplate_pattern: e.target.value },
+                      naming_patterns: { ...rules.naming_patterns, baseplate: e.target.value },
                     })
                   }
                   className="bg-[#0C1A11] border border-[#1E3E2B] rounded px-2.5 py-1 text-white text-xs w-full"
                 />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#6B8E78] block mb-1">CHARM Pattern</label>
+                <input
+                  type="text"
+                  value={rules.naming_patterns.charm}
+                  onChange={(e) =>
+                    setRules({
+                      ...rules,
+                      naming_patterns: { ...rules.naming_patterns, charm: e.target.value },
+                    })
+                  }
+                  className="bg-[#0C1A11] border border-[#1E3E2B] rounded px-2.5 py-1 text-white text-xs w-full"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#6B8E78] block mb-1">Area</label>
+                <input
+                  type="text"
+                  value={rules.naming_patterns.area}
+                  onChange={(e) =>
+                    setRules({
+                      ...rules,
+                      naming_patterns: { ...rules.naming_patterns, area: e.target.value },
+                    })
+                  }
+                  className="bg-[#0C1A11] border border-[#1E3E2B] rounded px-2.5 py-1 text-white text-xs w-full"
+                />
+              </div>
+              <div className="text-[10px] text-[#6B8E78] self-end">
+                Tokens: area, cab, cioc, cioc_global, bp, bp_global, slot, cab_name, cioc_name, baseplate_name
               </div>
             </div>
           </div>
