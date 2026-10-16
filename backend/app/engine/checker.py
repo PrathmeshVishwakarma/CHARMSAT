@@ -3,6 +3,7 @@ from collections import defaultdict
 import copy
 from app.models.domain import AllocatedSlot, Violation, Signal
 from app.models.rules import RuleSetConfig
+from app.engine.hardware import hardware_for, normalise_subtype
 
 class IndependentChecker:
     """
@@ -219,45 +220,46 @@ class IndependentChecker:
                         message=f"Cabinet {cab_idx+1} exceeds allowed capacity: {used_count} signals placed > limit of {max_allowed} (configured spare: {self.rules.spare_capacity.spare_percentage}%)."
                     ))
 
-        # 5. Rule 5: Isolated CHARM for DO Subtypes
-        if self.rules.isolated_charm.enabled:
-            for s in allocations:
-                if not s.is_spare and s.io_type == "DO" and s.subtype in self.rules.isolated_charm.isolated_subtypes:
-                    if "Isolated" not in s.charm or "Relay" not in s.terminal_block:
-                        violations.append(Violation(
-                            rule_id=self.rules.isolated_charm.id,
-                            rule_name=self.rules.isolated_charm.name,
-                            tag=s.tag,
-                            cable=s.cable,
-                            cabinet=s.cabinet,
-                            cioc=s.cioc,
-                            baseplate=s.baseplate,
-                            slot=s.slot,
-                            message=f"Signal {s.tag} with DO subtype '{s.subtype}' requires Isolated DO CHARM & Relay TB, but has {s.charm}."
-                        ))
-
-        # 6. Rule 6: Hardware Type Lookup
+        # 5+6. Hardware per signal type, re-applied from the data table (P1-4).
+        # No substring checks, no DO_ISOLATED special-casing: the same
+        # hardware_for() the solver used is re-evaluated here. Signals whose
+        # subtype matches nothing get a violation (the validator will own the
+        # hardware TQ in P1-3); they must never pass silently.
         if self.rules.signal_type_lookup.enabled:
-            lookup = self.rules.signal_type_lookup.mapping
             for s in allocations:
-                if not s.is_spare and s.io_type:
-                    key = s.io_type
-                    if s.io_type == "DO" and s.subtype in self.rules.isolated_charm.isolated_subtypes:
-                        key = "DO_ISOLATED"
-                    expected = lookup.get(key)
-                    if expected:
-                        if s.charm != expected.charm or s.terminal_block != expected.terminal_block:
-                            violations.append(Violation(
-                                rule_id=self.rules.signal_type_lookup.id,
-                                rule_name=self.rules.signal_type_lookup.name,
-                                tag=s.tag,
-                                cable=s.cable,
-                                cabinet=s.cabinet,
-                                cioc=s.cioc,
-                                baseplate=s.baseplate,
-                                slot=s.slot,
-                                message=f"Signal {s.tag} ({s.io_type}) assigned incorrect hardware: got {s.charm} / {s.terminal_block}, expected {expected.charm} / {expected.terminal_block}."
-                            ))
+                if s.is_spare or not s.io_type:
+                    continue
+                exp_charm, exp_tb = hardware_for(s.io_type, s.subtype)
+                if exp_charm is None:
+                    violations.append(Violation(
+                        rule_id=self.rules.signal_type_lookup.id,
+                        rule_name=self.rules.signal_type_lookup.name,
+                        tag=s.tag,
+                        cable=s.cable,
+                        cabinet=s.cabinet,
+                        cioc=s.cioc,
+                        baseplate=s.baseplate,
+                        slot=s.slot,
+                        message=f"Signal {s.tag} ({s.io_type}/{s.subtype or '-'}) matches no hardware-table row: no CHARM or terminal block can be assigned."
+                    ))
+                elif s.charm != exp_charm or s.terminal_block != exp_tb:
+                    rule_id = self.rules.signal_type_lookup.id
+                    rule_name = self.rules.signal_type_lookup.name
+                    if (normalise_subtype(s.subtype) in ("HIGH_CURRENT", "RELAY")
+                            and self.rules.isolated_charm.enabled):
+                        rule_id = self.rules.isolated_charm.id
+                        rule_name = self.rules.isolated_charm.name
+                    violations.append(Violation(
+                        rule_id=rule_id,
+                        rule_name=rule_name,
+                        tag=s.tag,
+                        cable=s.cable,
+                        cabinet=s.cabinet,
+                        cioc=s.cioc,
+                        baseplate=s.baseplate,
+                        slot=s.slot,
+                        message=f"Signal {s.tag} ({s.io_type}/{s.subtype or '-'}) has {s.charm} / {s.terminal_block}, expected {exp_charm} / {exp_tb}."
+                    ))
 
         return violations
 

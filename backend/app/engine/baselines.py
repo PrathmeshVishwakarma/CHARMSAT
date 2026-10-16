@@ -5,6 +5,15 @@ from app.models.domain import Signal, Cable, AllocatedSlot, AllocResult
 from app.models.rules import RuleSetConfig
 from app.engine.naming import NameGenerator
 from app.engine.checker import IndependentChecker
+from app.engine.hardware import hardware_for
+
+
+def _charm_and_tb(io_type, subtype):
+    """Hardware from the data table; TBD placeholder when nothing matches."""
+    charm_name, tb_name = hardware_for(io_type, subtype)
+    if charm_name is None:
+        return "TBD - see TQ", "TBD - see TQ"
+    return charm_name, tb_name
 
 class BaselineEngine:
     def __init__(self, rules: RuleSetConfig):
@@ -25,19 +34,11 @@ class BaselineEngine:
         bp = 0
         slot = 0
 
-        charm_lookup = self.rules.signal_type_lookup.mapping
-        isolated_subtypes = set(self.rules.isolated_charm.isolated_subtypes)
-
         for s in signals:
             cab_name, cioc_name, bp_name = self.name_gen.get_names(cab, cioc, bp)
-            
-            # Lookup charm
-            key = s.io_type
-            if s.io_type == "DO" and s.subtype in isolated_subtypes:
-                key = "DO_ISOLATED"
-            hw = charm_lookup.get(key)
-            charm_name = hw.charm if hw else f"{s.io_type} CHARM"
-            tb_name = hw.terminal_block if hw else "Standard TB"
+
+            # Lookup charm from the data table (P1-4)
+            charm_name, tb_name = _charm_and_tb(s.io_type, s.subtype)
 
             alloc = AllocatedSlot(
                 tag=s.tag,
@@ -125,8 +126,6 @@ class BaselineEngine:
         group_cab_map: Dict[str, int] = {}
 
         allocations: List[AllocatedSlot] = []
-        charm_lookup = self.rules.signal_type_lookup.mapping
-        isolated_subtypes = set(self.rules.isolated_charm.isolated_subtypes)
 
         for cbl in cable_list:
             cbl_seg = list(cbl.segs)[0] if cbl.segs else None
@@ -179,12 +178,7 @@ class BaselineEngine:
 
                             s = sig_map.get(p)
                             if s:
-                                key = s.io_type
-                                if s.io_type == "DO" and s.subtype in isolated_subtypes:
-                                    key = "DO_ISOLATED"
-                                hw = charm_lookup.get(key)
-                                charm_name = hw.charm if hw else f"{s.io_type} CHARM"
-                                tb_name = hw.terminal_block if hw else "Standard TB"
+                                charm_name, tb_name = _charm_and_tb(s.io_type, s.subtype)
 
                                 alloc = AllocatedSlot(
                                     tag=s.tag,

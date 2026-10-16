@@ -6,6 +6,7 @@ from app.models.domain import Signal, Cable, AllocatedSlot, AllocResult, TQ, Rev
 from app.models.rules import RuleSetConfig
 from app.engine.naming import NameGenerator
 from app.engine.checker import IndependentChecker
+from app.engine.hardware import hardware_for
 
 class CharmsatSolver:
     def __init__(self, rules: RuleSetConfig):
@@ -384,8 +385,6 @@ class CharmsatSolver:
         start_slots: Dict[str, int]
     ) -> List[AllocatedSlot]:
         allocations: List[AllocatedSlot] = []
-        charm_lookup = self.rules.signal_type_lookup.mapping
-        isolated_subtypes = set(self.rules.isolated_charm.isolated_subtypes)
 
         for c in cable_list:
             cab, cioc = cable_assignments[c.id]
@@ -400,12 +399,11 @@ class CharmsatSolver:
 
                 s = sig_map.get(p)
                 if s:
-                    key = s.io_type
-                    if s.io_type == "DO" and s.subtype in isolated_subtypes:
-                        key = "DO_ISOLATED"
-                    hw = charm_lookup.get(key)
-                    charm_name = hw.charm if hw else f"{s.io_type} CHARM"
-                    tb_name = hw.terminal_block if hw else "Standard TB"
+                    # Hardware comes from the data table (P1-4). No match ->
+                    # TBD placeholder; the validator raises the hardware TQ.
+                    charm_name, tb_name = hardware_for(s.io_type, s.subtype)
+                    if charm_name is None:
+                        charm_name, tb_name = "TBD - see TQ", "TBD - see TQ"
 
                     alloc = AllocatedSlot(
                         tag=s.tag,

@@ -51,8 +51,12 @@ class RuleSignalTypeLookupConfig(BaseModel):
         "AI": CharmHardwareMap(charm="AI 4-20mA HART", terminal_block="Standard TB"),
         "AO": CharmHardwareMap(charm="AO 4-20mA HART", terminal_block="Standard TB"),
         "DI": CharmHardwareMap(charm="DI 24V DC Dry Contact", terminal_block="Standard TB"),
-        "DO": CharmHardwareMap(charm="DO 24V DC High-Side", terminal_block="Fused TB"),
-        "DO_ISOLATED": CharmHardwareMap(charm="DO 24V DC Isolated", terminal_block="Relay TB"),
+        # PDS-correct pairings (P1-4). The solver/checker use engine/hardware.py;
+        # this dict is kept for UI display until the YAML rule language (P3).
+        "DO": CharmHardwareMap(charm="DO 24V DC High-Side", terminal_block="Standard"),
+        "DO_HIGH_CURRENT": CharmHardwareMap(charm="DO 24V DC Isolated", terminal_block="Fused Injected Power"),
+        "DO_RELAY": CharmHardwareMap(charm="DO 24V DC High-Side", terminal_block="Relay Output"),
+        "DO_ISOLATED": CharmHardwareMap(charm="DO 24V DC Isolated", terminal_block="Fused Injected Power"),
         "RTD": CharmHardwareMap(charm="RTD Temperature", terminal_block="RTD TB"),
         "TC": CharmHardwareMap(charm="TC Temperature", terminal_block="Thermocouple TB")
     })
