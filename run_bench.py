@@ -9,7 +9,8 @@ if str(backend_path) not in sys.path:
 
 from app.models.rules import RuleSetConfig
 from app.engine.generator import SyntheticGenerator
-from app.engine.solver import CharmsatSolver
+from app.engine.solve.engine import solve_allocation, solve_revision
+from app.engine.solve.bridge import to_core_signals
 from app.engine.baselines import BaselineEngine
 from app.engine.checker import IndependentChecker
 
@@ -29,7 +30,6 @@ def run_benchmarks():
     print("=" * 80)
 
     rules = RuleSetConfig()
-    solver = CharmsatSolver(rules)
     baselines = BaselineEngine(rules)
     checker = IndependentChecker(rules)
 
@@ -46,7 +46,7 @@ def run_benchmarks():
         sig_b, diff_meta = gen.generate_revision_b(sig_a, cable_sizes=c_sizes_a)
         c_sizes_b = diff_meta["cable_sizes"]
 
-        lower_bound = max(1, (len(sig_a) + 344) // 345)
+        lower_bound = max(1, cs_raw_a.get("lower_bounds", {}).get("best", 1))
 
         # 1. B0 Greedy (File order)
         t0 = time.time()
@@ -66,12 +66,13 @@ def run_benchmarks():
 
         # 3. CHARMSAT CP-SAT
         t0 = time.time()
-        cs_res_a = solver.solve(sig_a, c_sizes_a)
+        cs_res_a, cs_prev_a, cs_raw_a = solve_allocation(sig_a, c_sizes_a, rules)
         cs_time = time.time() - t0
         cs_viols = len(cs_res_a.violations)
 
         # Rev B solve with min-moves
-        cs_res_b = solver.solve(sig_b, c_sizes_b, prev_allocation=cs_res_a.allocations)
+        cs_res_b, _, _ = solve_revision(sig_b, c_sizes_b, rules, cs_prev_a,
+                                           sig_a, cs_raw_a.get("rows", []), to_core_signals(sig_a))
         cs_moves = cs_res_b.rev_summary.moves_ours if cs_res_b.rev_summary else 0
         cs_scratch_moves = cs_res_b.rev_summary.moves_from_scratch if cs_res_b.rev_summary else 0
 

@@ -106,3 +106,6 @@ class AllocResult(BaseModel):
     lower_bound_cabinets: int = 0
     solver_status: str = "OPTIMAL"
     rev_summary: Optional[RevisionSummary] = None
+    bounds: Dict[str, int] = Field(default_factory=dict)  # lower-bound family (P2-1)
+    empty_bp_per_cabinet: Dict[int, int] = Field(default_factory=dict)  # P2-1
+    required_empty_bp: int = 0  # empty baseplates the spare rule demands (P2-1)

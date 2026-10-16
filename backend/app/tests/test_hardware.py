@@ -4,7 +4,7 @@ import pytest
 from app.engine.hardware import hardware_for, normalise_subtype
 from app.models.rules import RuleSetConfig
 from app.models.domain import Signal
-from app.engine.solver import CharmsatSolver
+from app.engine.solve.engine import solve_allocation
 from app.engine.checker import IndependentChecker
 
 
@@ -54,7 +54,7 @@ def test_solver_and_checker_agree_on_do_hardware():
         Signal(tag="XV-1", io_type="DO", subtype="SOV", cable="C2", pair=3, group="G"),
         Signal(tag="XV-2", io_type="DO", subtype="SOV", cable="C2", pair=4, group="G"),
     ]
-    res = CharmsatSolver(rules).solve(signals, {"C1": 2, "C2": 6})
+    res, _, _ = solve_allocation(signals, {"C1": 2, "C2": 6}, rules)
     assert res.success
     by_tag = {a.tag: a for a in res.allocations if a.tag}
     assert (by_tag["SOV-1"].charm, by_tag["SOV-1"].terminal_block) == ("DO 24V DC Isolated", "Fused Injected Power")

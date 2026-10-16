@@ -11,7 +11,8 @@ from app.models.rules import RuleSetConfig, GenericRuleConfig
 from app.engine.generator import SyntheticGenerator
 from app.engine.mapper import ColumnAutoMapper, ColumnMappingResult
 from app.engine.validator import DataValidator
-from app.engine.solver import CharmsatSolver
+from app.engine.solve.engine import solve_allocation, solve_revision
+from app.engine.solve.bridge import to_core_signals
 from app.engine.checker import IndependentChecker
 from app.engine.baselines import BaselineEngine
 from app.engine.naming import NameGenerator
@@ -272,18 +273,14 @@ def run_allocation(req: AllocateRequest):
     validator = DataValidator(spare_pct=rules_to_use.spare_capacity.spare_percentage)
     valid_signals, data_tqs, ledger = validator.validate(signals, cable_sizes)
 
-    # Step 2: Solve with CP-SAT
-    solver = CharmsatSolver(rules_to_use)
-    prev_alloc = session_state.get("alloc_a").allocations if (req.use_rev_a_as_hints and session_state.get("alloc_a")) else None
+    # Step 2: three-stage solve (units -> cabinets -> CIOCs -> slots)
+    prevmap = session_state.get("placements_a") if req.use_rev_a_as_hints else None
+    result, new_prev, raw = solve_allocation(valid_signals, cable_sizes, rules_to_use,
+                                             prev=prevmap)
 
-    result = solver.solve(
-        signals=valid_signals,
-        cable_sizes=cable_sizes,
-        prev_allocation=prev_alloc
-    )
-
-    # Merge data TQs with solver TQs
-    result.tqs.extend(data_tqs)
+    # Merge data TQs (validator's richer versions win on duplicate ids)
+    seen_ids = {t.id for t in data_tqs}
+    result.tqs = data_tqs + [t for t in result.tqs if t.id not in seen_ids]
     # Coverage (S2-8): every input tag is either placed or held by a TQ.
     # placed + held = ledger-verified; anything else is a pipeline bug.
     placed_tags = {s.tag for s in result.allocations if s.tag}
@@ -294,8 +291,12 @@ def run_allocation(req: AllocateRequest):
 
     if req.use_rev_a_as_hints:
         session_state["alloc_b"] = result
+        session_state["placements_b"] = new_prev
+        session_state["rows_b"] = raw.get("rows", [])
     else:
         session_state["alloc_a"] = result
+        session_state["placements_a"] = new_prev
+        session_state["rows_a"] = raw.get("rows", [])
 
     return result.model_dump()
 
@@ -325,6 +326,12 @@ def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: 
         signals_a, cab_info = gen.generate_dataset(n_signals=1000)
         session_state["signals_a"] = signals_a
         session_state["cables_info_a"] = cab_info
+        # Fresh Rev A through the three-stage engine so placements exist
+        sizes_a = {c["cable_id"]: c["size"] for c in cab_info}
+        res_a, prev_a, raw_a = solve_allocation(signals_a, sizes_a, current_rules)
+        session_state["alloc_a"] = res_a
+        session_state["placements_a"] = prev_a
+        session_state["rows_a"] = raw_a.get("rows", [])
 
     cables_a = {c["cable_id"]: c["size"] for c in session_state.get("cables_info_a", [])} or None
     gen = SyntheticGenerator(seed=42)
@@ -339,17 +346,21 @@ def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: 
 
     session_state["signals_b"] = signals_b
 
-    # Allocate Rev B with min-move; Rev A cable sizes are carried, never inferred
+    # Rev B via keep literals + measured from-scratch baseline (P2-2 core)
     cable_sizes_b = diff_meta["cable_sizes"]
-    solver = CharmsatSolver(current_rules)
-    prev_alloc = session_state.get("alloc_a").allocations if session_state.get("alloc_a") else None
-
-    result_b = solver.solve(
-        signals=signals_b,
-        cable_sizes=cable_sizes_b,
-        prev_allocation=prev_alloc
+    validator = DataValidator()
+    valid_b, data_tqs_b, _ = validator.validate(signals_b, cable_sizes_b)
+    result_b, prev_b, raw_b = solve_revision(
+        valid_b, cable_sizes_b, current_rules,
+        session_state.get("placements_a") or {},
+        signals_a, session_state.get("rows_a") or [],
+        to_core_signals(signals_a),
     )
+    seen = {t.id for t in data_tqs_b}
+    result_b.tqs = data_tqs_b + [t for t in result_b.tqs if t.id not in seen]
     session_state["alloc_b"] = result_b
+    session_state["placements_b"] = prev_b
+    session_state["rows_b"] = raw_b.get("rows", [])
 
     return {
         "diff_meta": diff_meta,
@@ -367,7 +378,6 @@ def run_benchmark(req: BenchmarkRequest):
     cable_sizes_b = diff_meta_b["cable_sizes"]
 
     baselines = BaselineEngine(current_rules)
-    solver = CharmsatSolver(current_rules)
 
     # 1. B0 Greedy in file order
     b0_res = baselines.run_b0_file_order(signals, cable_sizes)
@@ -375,10 +385,14 @@ def run_benchmark(req: BenchmarkRequest):
     # 2. B1 Greedy grouped & A/B aware
     b1_res = baselines.run_b1_grouped_ab(signals, cable_sizes)
 
-    # 3. CHARMSAT CP-SAT
-    charmsat_res_a = solver.solve(signals, cable_sizes)
-    # Solve Rev B
-    charmsat_res_b = solver.solve(signals_b, cable_sizes_b, prev_allocation=charmsat_res_a.allocations)
+    # 3. CHARMSAT three-stage engine (Rev A fresh, Rev B via keep literals)
+    charmsat_res_a, prev_a, raw_a = solve_allocation(signals, cable_sizes, current_rules)
+    charmsat_res_b, _, _ = solve_revision(
+        signals_b, cable_sizes_b, current_rules, prev_a,
+        signals, raw_a.get("rows", []), to_core_signals(signals))
+
+    # Proven lower bound from the engine (max of slot/segregation/solver bounds)
+    lower_bound = max(1, raw_a.get("lower_bounds", {}).get("best", 1))
 
     # Rev B moves for B1 (measured: re-run B1 on Rev B, count moved tags)
     b1_rev_b = baselines.run_b1_grouped_ab(signals_b, cable_sizes_b)
@@ -387,8 +401,6 @@ def run_benchmark(req: BenchmarkRequest):
     b0_moves = _moves_between(b0_res.allocations, b0_rev_b.allocations)
     b1_moves = _moves_between(b1_res.allocations, b1_rev_b.allocations)
     charmsat_moves = charmsat_res_b.rev_summary.moves_ours if charmsat_res_b.rev_summary else 0
-
-    lower_bound = max(1, (len(signals) + 344) // 345)
 
     def _verdict(name, viols, cabs, lb, status=""):
         if viols > 0:
@@ -491,17 +503,22 @@ def demo_init():
     session_state["signals_a"] = sig_a
     session_state["cables_info_a"] = cab_info_a
 
-    solver = CharmsatSolver(current_rules)
-    res_a = solver.solve(sig_a, c_sizes_a)
+    res_a, prev_a, raw_a = solve_allocation(sig_a, c_sizes_a, current_rules)
     session_state["alloc_a"] = res_a
+    session_state["placements_a"] = prev_a
+    session_state["rows_a"] = raw_a.get("rows", [])
 
     # Generate Rev B (sizes carried from Rev A, never inferred per signal)
     sig_b, diff_meta = gen.generate_revision_b(sig_a, cable_sizes=c_sizes_a)
     session_state["signals_b"] = sig_b
     c_sizes_b = diff_meta["cable_sizes"]
 
-    res_b = solver.solve(sig_b, c_sizes_b, prev_allocation=res_a.allocations)
+    res_b, prev_b, raw_b = solve_revision(
+        sig_b, c_sizes_b, current_rules, prev_a,
+        sig_a, raw_a.get("rows", []), to_core_signals(sig_a))
     session_state["alloc_b"] = res_b
+    session_state["placements_b"] = prev_b
+    session_state["rows_b"] = raw_b.get("rows", [])
 
     return {
         "status": "DEMO_READY",

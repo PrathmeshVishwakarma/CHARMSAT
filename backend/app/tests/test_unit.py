@@ -6,7 +6,7 @@ from hypothesis import given, settings, strategies as st
 from app.models.rules import RuleSetConfig
 from app.models.domain import Signal
 from app.engine.generator import SyntheticGenerator
-from app.engine.solver import CharmsatSolver
+from app.engine.solve.engine import solve_allocation
 from app.engine.checker import IndependentChecker
 from app.engine.validator import DataValidator
 from app.engine.mapper import ColumnAutoMapper
@@ -28,8 +28,7 @@ def test_independent_checker_zero_violations_on_valid_allocation():
     cable_sizes = {c["cable_id"]: c["size"] for c in cables_info}
 
     rules = RuleSetConfig()
-    solver = CharmsatSolver(rules)
-    result = solver.solve(signals, cable_sizes)
+    result, _, _ = solve_allocation(signals, cable_sizes, rules)
 
     assert result.success is True
     assert len(result.violations) == 0
@@ -45,8 +44,7 @@ def test_hand_planted_violation_caught():
     cable_sizes = {c["cable_id"]: c["size"] for c in cables_info}
 
     rules = RuleSetConfig()
-    solver = CharmsatSolver(rules)
-    result = solver.solve(signals, cable_sizes)
+    result, _, _ = solve_allocation(signals, cable_sizes, rules)
     assert result.success is True
 
     checker = IndependentChecker(rules)
@@ -73,11 +71,11 @@ def test_determinism_same_seed_gives_identical_output():
         "import sys, json, hashlib; sys.path.insert(0, 'backend');"
         "from app.models.rules import RuleSetConfig;"
         "from app.engine.generator import SyntheticGenerator;"
-        "from app.engine.solver import CharmsatSolver;"
+        "from app.engine.solve.engine import solve_allocation;"
         "gen = SyntheticGenerator(seed=555);"
         "sig, c_info = gen.generate_dataset(n_signals=300);"
         "c_sizes = {c['cable_id']: c['size'] for c in c_info};"
-        "res = CharmsatSolver(RuleSetConfig()).solve(sig, c_sizes);"
+        "res, _, _ = solve_allocation(sig, c_sizes, RuleSetConfig());"
         "print(hashlib.sha256(json.dumps([a.model_dump() for a in res.allocations], sort_keys=True).encode()).hexdigest())"
     )
     hashes = []
@@ -130,8 +128,7 @@ def test_hypothesis_zero_violations_property(n_signals, seed):
     cable_sizes = {c["cable_id"]: c["size"] for c in cables_info}
 
     rules = RuleSetConfig()
-    solver = CharmsatSolver(rules)
-    result = solver.solve(signals, cable_sizes)
+    result, _, _ = solve_allocation(signals, cable_sizes, rules)
 
     assert result.success is True
     checker = IndependentChecker(rules)
