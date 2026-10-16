@@ -5,7 +5,9 @@ from app.engine.hardware import hardware_for, normalise_subtype
 from app.models.rules import RuleSetConfig
 from app.models.domain import Signal
 from app.engine.solve.engine import solve_allocation
-from app.engine.checker import IndependentChecker
+from app.engine.solve.bridge import rules_to_ref
+import checker.check as checker_pkg
+from app.engine.io.template_writer import rows_from_allocations
 
 
 def test_do_high_current_isolated_fused():
@@ -60,4 +62,10 @@ def test_solver_and_checker_agree_on_do_hardware():
     assert (by_tag["SOV-1"].charm, by_tag["SOV-1"].terminal_block) == ("DO 24V DC Isolated", "Fused Injected Power")
     assert (by_tag["RY-1"].charm, by_tag["RY-1"].terminal_block) == ("DO 24V DC High-Side", "Relay Output")
     assert (by_tag["XV-1"].charm, by_tag["XV-1"].terminal_block) == ("DO 24V DC High-Side", "Standard")
-    assert IndependentChecker(rules).verify(res.allocations, signals) == []
+    from app.engine.hardware import HW_TABLE
+    io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
+                "cable": s.cable, "pair": s.pair, "group": s.group or "",
+                "seg": s.seg or ""} for s in signals]
+    found = checker_pkg.check(io_rows, rows_from_allocations(res.allocations),
+                              rules_to_ref(rules), HW_TABLE, {"C1": 2, "C2": 6})
+    assert [v for v in found if v["status"] == "violation"] == []

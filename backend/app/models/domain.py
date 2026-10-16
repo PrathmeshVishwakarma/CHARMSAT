@@ -60,6 +60,7 @@ class Violation(BaseModel):
     baseplate: Optional[int] = None
     slot: Optional[int] = None
     message: str
+    status: str = "violation"  # violation | waived_by_tq (P2-4)
 
 class TQ(BaseModel):
     id: str
@@ -109,3 +110,4 @@ class AllocResult(BaseModel):
     bounds: Dict[str, int] = Field(default_factory=dict)  # lower-bound family (P2-1)
     empty_bp_per_cabinet: Dict[int, int] = Field(default_factory=dict)  # P2-1
     required_empty_bp: int = 0  # empty baseplates the spare rule demands (P2-1)
+    waived_count: int = 0  # checker findings explained by an open TQ (P2-4)

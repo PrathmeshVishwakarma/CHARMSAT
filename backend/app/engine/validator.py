@@ -40,10 +40,16 @@ class DataValidator:
             held_rows[tag].append(row)
 
         # 0. Normalise IO type / subtype through synonym tables (S1-9).
+        # Canonical subtypes (HIGH_CURRENT/RELAY/"") so the solver, the
+        # workbook and the independent checker all compare the same words.
+        # Unknown subtype text is left raw -> hardware TQ downstream.
         for s in signals:
             norm = normalise_io_type(s.io_type) if s.io_type else None
             if norm:
                 s.io_type = norm
+            sub = normalise_subtype(s.subtype)
+            if sub is not None:
+                s.subtype = sub or None
 
         # 1. Duplicate tags: both rows held (reference behaviour).
         seen: Dict[str, Signal] = {}

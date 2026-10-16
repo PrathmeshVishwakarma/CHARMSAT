@@ -13,7 +13,6 @@ from app.engine.mapper import ColumnAutoMapper, ColumnMappingResult
 from app.engine.validator import DataValidator
 from app.engine.solve.engine import solve_allocation, solve_revision
 from app.engine.solve.bridge import to_core_signals
-from app.engine.checker import IndependentChecker
 from app.engine.baselines import BaselineEngine
 from app.engine.naming import NameGenerator
 from app.engine.excel_io import ExcelIO
@@ -79,6 +78,48 @@ def _moves_between(prev_allocs, new_allocs) -> int:
     prev = {a.tag: pos(a) for a in prev_allocs if a.tag}
     new = {a.tag: pos(a) for a in new_allocs if a.tag}
     return sum(1 for t, p in prev.items() if t in new and new[t] != p)
+
+
+# Reference-checker rule labels -> repo rule ids (display translation only).
+_RULE_ID_MAP = {"CABLE": "RULE-02", "R1-GROUP": "RULE-03", "R5-SPARE": "RULE-04",
+                "R6-HW": "RULE-06", "COVERAGE": "RULE-00", "CAPACITY": "RULE-04"}
+
+
+def _verify_on_export(allocations, signals, cable_sizes, rules, held_tags, waived_groups):
+    """Write allocations into a template copy, read the FILE back with the
+    independent checker (backend/checker, no app imports). Returns
+    (violations, waived_count, export_bytes, output_hash)."""
+    import tempfile as _tf
+    from pathlib import Path as _Path
+    import checker.check as _chk
+    from app.engine.hardware import HW_TABLE
+    from app.engine.solve.bridge import rules_to_ref
+    from app.engine.io.template_writer import (
+        load_template_map, write_template, rows_from_allocations, allocation_hash)
+
+    template = _Path("data/templates/synthetic_template.xlsx")
+    tmap = load_template_map(_Path("data/templates/synthetic_map.yaml"))
+    rows = rows_from_allocations(allocations)
+    ohash = allocation_hash(rows)
+    with _tf.TemporaryDirectory() as tmp:
+        out = _Path(tmp) / "verify.xlsx"
+        write_template(template, out, tmap, rows)
+        data = out.read_bytes()
+    back = _chk.read_workbook_rows(data, {"allocation_sheet": tmap["allocation_sheet"],
+                                          "first_data_row": tmap["first_data_row"],
+                                          "columns": tmap["columns"]})
+    io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
+                "cable": s.cable, "pair": s.pair, "group": s.group or "",
+                "seg": s.seg or ""} for s in signals]
+    found = _chk.check(io_rows, back, rules_to_ref(rules), HW_TABLE, cable_sizes,
+                       frozenset(held_tags), frozenset(waived_groups))
+    from app.models.domain import Violation
+    violations = [Violation(rule_id=_RULE_ID_MAP.get(v["rule"], v["rule"]),
+                            rule_name=_RULE_ID_MAP.get(v["rule"], v["rule"]),
+                            message=v["message"], status=v["status"])
+                  for v in found if v["status"] == "violation"]
+    waived = sum(1 for v in found if v["status"] != "violation")
+    return violations, waived, data, ohash
 
 class PlantViolationRequest(BaseModel):
     plant_type: str = "ab_leak"  # 'ab_leak' | 'split_cable' | 'cross_boundary' | 'scatter_group'
@@ -289,6 +330,27 @@ def run_allocation(req: AllocateRequest):
     total_in = len(signals)
     result.coverage_pct = round(100.0 * len(accounted) / max(1, total_in), 1)
 
+    # Independent verification on the WRITTEN file (P2-4): every allocation
+    # result carries a checker report derived from the export, not memory.
+    waived_groups = {t.id[len("TQ-CAP-"):] for t in result.tqs if t.id.startswith("TQ-CAP-")}
+    try:
+        violations, waived, export_bytes, ohash = _verify_on_export(
+            result.allocations, valid_signals, cable_sizes, rules_to_use,
+            held_tags, waived_groups)
+        result.violations = violations
+        result.waived_count = waived
+        result.success = len(violations) == 0
+        session_state["last_export"] = export_bytes
+        session_state["last_export_hash"] = ohash
+        session_state["last_held_tags"] = sorted(held_tags)
+        session_state["last_waived_groups"] = sorted(waived_groups)
+        session_state["last_sizes"] = dict(cable_sizes)
+    except Exception as e:
+        result.tqs.append(TQ(
+            id="TQ-EXPORT-01", kind="data", items=[], tags=[], rows=[],
+            rule_ids=[], message=f"Export verification failed: {e}.",
+            options=["Retry the allocation; the template writer is under test (P2-3)."]))
+
     if req.use_rev_a_as_hints:
         session_state["alloc_b"] = result
         session_state["placements_b"] = new_prev
@@ -300,22 +362,72 @@ def run_allocation(req: AllocateRequest):
 
     return result.model_dump()
 
+@app.post("/api/check")
+def check_exported():
+    """Re-run the independent checker on the last exported workbook bytes."""
+    import checker.check as _chk
+    from app.engine.hardware import HW_TABLE
+    from app.engine.solve.bridge import rules_to_ref
+    from app.engine.io.template_writer import load_template_map, allocation_hash
+    from pathlib import Path as _Path
+    data = session_state.get("last_export")
+    if not data:
+        raise HTTPException(status_code=400, detail="No export yet: allocate first")
+    tmap = load_template_map(_Path("data/templates/synthetic_map.yaml"))
+    back = _chk.read_workbook_rows(data, {"allocation_sheet": tmap["allocation_sheet"],
+                                          "first_data_row": tmap["first_data_row"],
+                                          "columns": tmap["columns"]})
+    signals = session_state.get("signals_a") or []
+    io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
+                "cable": s.cable, "pair": s.pair, "group": s.group or "",
+                "seg": s.seg or ""} for s in signals]
+    found = _chk.check(io_rows, back, rules_to_ref(current_rules), HW_TABLE,
+                       session_state.get("last_sizes", {}),
+                       frozenset(session_state.get("last_held_tags", [])),
+                       frozenset(session_state.get("last_waived_groups", [])))
+    real = [v for v in found if v["status"] == "violation"]
+    return {"output_hash": session_state.get("last_export_hash"),
+            "n_violation": len(real), "n_waived": len(found) - len(real),
+            "violations": [{"rule_id": _RULE_ID_MAP.get(v["rule"], v["rule"]),
+                            "rule_name": _RULE_ID_MAP.get(v["rule"], v["rule"]),
+                            "message": v["message"], "status": v["status"]} for v in real]}
+
+
 @app.post("/api/checker/plant-violation")
 def plant_violation(req: PlantViolationRequest):
-    active_alloc = session_state.get("alloc_a")
-    if not active_alloc or not active_alloc.allocations:
+    import checker.check as _chk
+    from app.engine.io.template_writer import load_template_map
+    from pathlib import Path as _Path
+    data = session_state.get("last_export")
+    if not data:
         raise HTTPException(status_code=400, detail="Run allocation first before planting a violation")
-
-    checker = IndependentChecker(current_rules)
-    tampered_allocations = checker.plant_violation(active_alloc.allocations, req.plant_type)
-    violations = checker.verify(tampered_allocations)
-
+    tmap = load_template_map(_Path("data/templates/synthetic_map.yaml"))
+    tmap_small = {"allocation_sheet": tmap["allocation_sheet"],
+                  "first_data_row": tmap["first_data_row"], "columns": tmap["columns"]}
+    try:
+        tampered = _chk.plant_violation(data, tmap_small, req.plant_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    back = _chk.read_workbook_rows(tampered, tmap_small)
+    signals = session_state.get("signals_a") or []
+    io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
+                "cable": s.cable, "pair": s.pair, "group": s.group or "",
+                "seg": s.seg or ""} for s in signals]
+    from app.engine.hardware import HW_TABLE
+    from app.engine.solve.bridge import rules_to_ref
+    found = _chk.check(io_rows, back, rules_to_ref(current_rules), HW_TABLE,
+                       session_state.get("last_sizes", {}),
+                       frozenset(session_state.get("last_held_tags", [])),
+                       frozenset(session_state.get("last_waived_groups", [])))
+    real = [v for v in found if v["status"] == "violation"]
     return {
         "status": "TAMPERED_FOR_AUDIT_DEMO",
         "plant_type": req.plant_type,
-        "violations_detected_by_independent_checker": len(violations),
-        "violations": [v.model_dump() for v in violations],
-        "tampered_sample_slots": [s.model_dump() for s in tampered_allocations[:50]]
+        "violations_detected_by_independent_checker": len(real),
+        "violations": [{"rule_id": _RULE_ID_MAP.get(v["rule"], v["rule"]),
+                        "rule_name": _RULE_ID_MAP.get(v["rule"], v["rule"]),
+                        "message": v["message"], "status": v["status"]} for v in real],
+        "tampered_sample_slots": back[:50]
     }
 
 @app.post("/api/revision/generate-b")
