@@ -67,6 +67,14 @@ class AllocateRequest(BaseModel):
     rules: Optional[RuleSetConfig] = None
     use_rev_a_as_hints: bool = False
 
+def _moves_between(prev_allocs, new_allocs) -> int:
+    """Measured moves: tags present in both allocations whose slot changed."""
+    def pos(a):
+        return (a.cabinet, a.cioc, a.baseplate, a.slot)
+    prev = {a.tag: pos(a) for a in prev_allocs if a.tag}
+    new = {a.tag: pos(a) for a in new_allocs if a.tag}
+    return sum(1 for t, p in prev.items() if t in new and new[t] != p)
+
 class PlantViolationRequest(BaseModel):
     plant_type: str = "ab_leak"  # 'ab_leak' | 'split_cable' | 'cross_boundary' | 'scatter_group'
 
@@ -263,14 +271,22 @@ def run_benchmark(req: BenchmarkRequest):
     # Solve Rev B
     charmsat_res_b = solver.solve(signals_b, cable_sizes_b, prev_allocation=charmsat_res_a.allocations)
 
-    # Rev B moves for B1 (measure churn of greedy on revision)
+    # Rev B moves for B1 (measured: re-run B1 on Rev B, count moved tags)
     b1_rev_b = baselines.run_b1_grouped_ab(signals_b, cable_sizes_b)
-    # Estimate moves
-    b0_moves = int(len(signals) * 0.85)
-    b1_moves = int(len(signals) * 0.42)
-    charmsat_moves = charmsat_res_b.rev_summary.moves_ours if charmsat_res_b.rev_summary else 18
+    b0_rev_b = baselines.run_b0_file_order(signals_b, cable_sizes_b)
+    # Measured moves: compare each baseline's Rev A vs Rev B allocations tag-by-tag.
+    b0_moves = _moves_between(b0_res.allocations, b0_rev_b.allocations)
+    b1_moves = _moves_between(b1_res.allocations, b1_rev_b.allocations)
+    charmsat_moves = charmsat_res_b.rev_summary.moves_ours if charmsat_res_b.rev_summary else 0
 
     lower_bound = max(1, (len(signals) + 344) // 345)
+
+    def _verdict(name, viols, cabs, lb, status=""):
+        if viols > 0:
+            return "FAIL (Violates Rules)"
+        if cabs == lb:
+            return "OPTIMAL (matches lower bound)" if not status or status == "OPTIMAL" else f"FEASIBLE (matches lower bound, {status})"
+        return f"GAP {cabs - lb} (uses {cabs}, lower bound {lb})"
 
     results = [
         {
@@ -279,8 +295,8 @@ def run_benchmark(req: BenchmarkRequest):
             "cabinets": b0_res.cabinets_used,
             "cabinets_vs_lb": f"{b0_res.cabinets_used} / {lower_bound}",
             "rev_b_moves": b0_moves,
-            "runtime_s": b0_res.runtime_s,
-            "verdict": "FAIL (Violates Rules)"
+            "runtime_s": round(b0_res.runtime_s, 3),
+            "verdict": _verdict("B0", len(b0_res.violations), b0_res.cabinets_used, lower_bound)
         },
         {
             "engine": "B1 Greedy (Grouped + A/B)",
@@ -288,8 +304,8 @@ def run_benchmark(req: BenchmarkRequest):
             "cabinets": b1_res.cabinets_used,
             "cabinets_vs_lb": f"{b1_res.cabinets_used} / {lower_bound}",
             "rev_b_moves": b1_moves,
-            "runtime_s": b1_res.runtime_s,
-            "verdict": "HEURISTIC (High Churn)"
+            "runtime_s": round(b1_res.runtime_s, 3),
+            "verdict": _verdict("B1", len(b1_res.violations), b1_res.cabinets_used, lower_bound)
         },
         {
             "engine": "CHARMSAT (CP-SAT Solver)",
@@ -297,8 +313,8 @@ def run_benchmark(req: BenchmarkRequest):
             "cabinets": charmsat_res_a.cabinets_used,
             "cabinets_vs_lb": f"{charmsat_res_a.cabinets_used} / {lower_bound}",
             "rev_b_moves": charmsat_moves,
-            "runtime_s": charmsat_res_a.runtime_s,
-            "verdict": "OPTIMAL (0 Violations, Min Moves)"
+            "runtime_s": round(charmsat_res_a.runtime_s, 3),
+            "verdict": _verdict("CHARMSAT", len(charmsat_res_a.violations), charmsat_res_a.cabinets_used, lower_bound, charmsat_res_a.solver_status)
         }
     ]
 
@@ -318,13 +334,11 @@ def run_benchmark(req: BenchmarkRequest):
         "signal_count": req.signal_count,
         "lower_bound_cabinets": lower_bound,
         "benchmark_table": results,
+        # Only the point just measured. History across N comes from `make bench`
+        # (bench/results.json), never from typed-in constants.
         "runtime_line_chart": [
-            {"signals": 200, "b0": 0.01, "b1": 0.04, "charmsat": 0.35},
-            {"signals": 500, "b0": 0.03, "b1": 0.12, "charmsat": 0.82},
-            {"signals": 1000, "b0": 0.06, "b1": 0.28, "charmsat": charmsat_res_a.runtime_s},
-            {"signals": 2500, "b0": 0.15, "b1": 0.75, "charmsat": 4.10},
-            {"signals": 5000, "b0": 0.32, "b1": 1.60, "charmsat": 11.40},
-            {"signals": 10000, "b0": 0.68, "b1": 3.40, "charmsat": 38.20}
+            {"signals": req.signal_count, "b0": round(b0_res.runtime_s, 3),
+             "b1": round(b1_res.runtime_s, 3), "charmsat": round(charmsat_res_a.runtime_s, 3)}
         ]
     }
 

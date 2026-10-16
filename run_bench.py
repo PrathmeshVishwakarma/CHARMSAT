@@ -13,6 +13,15 @@ from app.engine.solver import CharmsatSolver
 from app.engine.baselines import BaselineEngine
 from app.engine.checker import IndependentChecker
 
+
+def _moves_between(prev_allocs, new_allocs) -> int:
+    """Measured moves: tags present in both allocations whose slot changed."""
+    def pos(a):
+        return (a.cabinet, a.cioc, a.baseplate, a.slot)
+    prev = {a.tag: pos(a) for a in prev_allocs if a.tag}
+    new = {a.tag: pos(a) for a in new_allocs if a.tag}
+    return sum(1 for t, p in prev.items() if t in new and new[t] != p)
+
 def run_benchmarks():
     print("=" * 80)
     print("  CHARMSAT — ALGORITHM BENCHMARK PROTOCOL")
@@ -44,14 +53,16 @@ def run_benchmarks():
         b0_res = baselines.run_b0_file_order(sig_a, c_sizes_a)
         b0_time = time.time() - t0
         b0_viols = len(b0_res.violations)
-        b0_moves = int(n * 0.85)
+        b0_rev_b = baselines.run_b0_file_order(sig_b, c_sizes_b)
+        b0_moves = _moves_between(b0_res.allocations, b0_rev_b.allocations)
 
         # 2. B1 Greedy (Grouped + A/B)
         t0 = time.time()
         b1_res = baselines.run_b1_grouped_ab(sig_a, c_sizes_a)
         b1_time = time.time() - t0
         b1_viols = len(b1_res.violations)
-        b1_moves = int(n * 0.42)
+        b1_rev_b = baselines.run_b1_grouped_ab(sig_b, c_sizes_b)
+        b1_moves = _moves_between(b1_res.allocations, b1_rev_b.allocations)
 
         # 3. CHARMSAT CP-SAT
         t0 = time.time()
@@ -87,7 +98,7 @@ def run_benchmarks():
         lb = r["charmsat"]["lb"]
         print(f"| {n:,} | B0 Greedy (File Order) | {r['b0']['viols']} | {r['b0']['cabs']} / {lb} | {r['b0']['cabs']/lb:.2f}x | {r['b0']['moves']} | {r['b0']['time']:.3f} s |")
         print(f"| {n:,} | B1 Greedy (Grouped + A/B) | {r['b1']['viols']} | {r['b1']['cabs']} / {lb} | {r['b1']['cabs']/lb:.2f}x | {r['b1']['moves']} | {r['b1']['time']:.3f} s |")
-        print(f"| {n:,} | **CHARMSAT (CP-SAT)** | **{r['charmsat']['viols']}** | **{r['charmsat']['cabs']} / {lb}** | **1.00x** | **{r['charmsat']['moves']}** | **{r['charmsat']['time']:.3f} s** |")
+        print(f"| {n:,} | **CHARMSAT (CP-SAT)** | **{r['charmsat']['viols']}** | **{r['charmsat']['cabs']} / {lb}** | **{r['charmsat']['cabs']/lb:.2f}x** | **{r['charmsat']['moves']}** | **{r['charmsat']['time']:.3f} s** |")
     print("=" * 80)
 
 if __name__ == "__main__":

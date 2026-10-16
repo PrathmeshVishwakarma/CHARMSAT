@@ -51,28 +51,28 @@ export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
         <div className="bg-[#0B1710] border border-[#1E3A2B] rounded-xl p-3.5 flex flex-col justify-between">
           <span className="text-[10px] font-mono text-[#6B8E78]">ADDED SIGNALS</span>
           <span className="text-2xl font-mono font-bold text-[#4ADE80] mt-1">
-            +{revSummary ? revSummary.added_count : 0}
+            +{revSummary ? revSummary.added_count : '—'}
           </span>
           <span className="text-[10px] font-mono text-[#6B8E78]">New Field Loops</span>
         </div>
         <div className="bg-[#0B1710] border border-[#1E3A2B] rounded-xl p-3.5 flex flex-col justify-between">
           <span className="text-[10px] font-mono text-[#6B8E78]">DELETED SIGNALS</span>
           <span className="text-2xl font-mono font-bold text-red-400 mt-1">
-            -{revSummary ? revSummary.deleted_count : 0}
+            -{revSummary ? revSummary.deleted_count : '—'}
           </span>
           <span className="text-[10px] font-mono text-[#6B8E78]">Decommissioned</span>
         </div>
         <div className="bg-[#0B1710] border border-[#1E3A2B] rounded-xl p-3.5 flex flex-col justify-between">
           <span className="text-[10px] font-mono text-[#6B8E78]">TYPE MODIFICATIONS</span>
           <span className="text-2xl font-mono font-bold text-[#38BDF8] mt-1">
-            {revSummary ? revSummary.changed_count : 0}
+            {revSummary ? revSummary.changed_count : '—'}
           </span>
           <span className="text-[10px] font-mono text-[#6B8E78]">e.g. AI ↔ AO</span>
         </div>
         <div className="bg-[#0B1710] border border-[#1E3A2B] rounded-xl p-3.5 flex flex-col justify-between">
           <span className="text-[10px] font-mono text-[#6B8E78]">UNCHANGED PINNED</span>
           <span className="text-2xl font-mono font-bold text-white mt-1">
-            {revSummary ? revSummary.unchanged_count.toLocaleString() : 0}
+            {revSummary ? revSummary.unchanged_count.toLocaleString() : '—'}
           </span>
           <span className="text-[10px] font-mono text-[#4ADE80]">Exact Slot Retained</span>
         </div>
@@ -95,15 +95,19 @@ export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
           <div className="py-4">
             <div className="text-[11px] font-mono text-[#6B8E78]">MOVED SIGNALS IN HARDWARE</div>
             <div className="text-5xl font-mono font-bold text-[#5CFF7A] tracking-tight mt-1">
-              {revSummary ? revSummary.moves_ours : 26}
+              {revSummary ? revSummary.moves_ours : '—'}
             </div>
             <div className="text-xs font-mono text-[#A7C7B3] mt-2">
-              Only moved signals where adjacent cable expansions strictly forced relocations.
+              {revSummary
+                ? 'Only moved signals where adjacent cable expansions strictly forced relocations.'
+                : 'No revision run yet — upload Rev B and click GENERATE & SOLVE REV B.'}
             </div>
           </div>
 
           <div className="p-3 rounded bg-[#09170E] border border-[#183B23] text-[11px] font-mono text-[#5CFF7A]">
-            ✓ Field termination drawings stay 97.4% valid across project revision.
+            {revSummary
+              ? `Field termination drawings stay ${(100 * revSummary.unchanged_count / Math.max(1, revSummary.unchanged_count + revSummary.moves_ours)).toFixed(1)}% valid across project revision.`
+              : 'Move statistics appear here after a revision run.'}
           </div>
         </div>
 
@@ -122,15 +126,19 @@ export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
           <div className="py-4">
             <div className="text-[11px] font-mono text-[#8F6B6B]">MOVED SIGNALS IN HARDWARE</div>
             <div className="text-5xl font-mono font-bold text-red-400 tracking-tight mt-1">
-              {revSummary ? revSummary.moves_from_scratch : 221}
+              {revSummary ? revSummary.moves_from_scratch : '—'}
             </div>
             <div className="text-xs font-mono text-[#CCA5A5] mt-2">
-              Arbitrary symmetry breaking churns hundreds of untouched field signals!
+              {revSummary
+                ? 'Arbitrary symmetry breaking churns untouched field signals!'
+                : 'The from-scratch baseline is computed live alongside the revision.'}
             </div>
           </div>
 
           <div className="p-3 rounded bg-[#261010] border border-[#4D1B1B] text-[11px] font-mono text-red-300">
-            ✗ Massive engineering rework: 8.5x more wiring modifications required on site.
+            {revSummary && revSummary.moves_ours > 0
+              ? `Engineering rework: ${(revSummary.moves_from_scratch / revSummary.moves_ours).toFixed(1)}x more wiring modifications required on site.`
+              : 'Rework comparison appears here after a revision run.'}
           </div>
         </div>
       </div>

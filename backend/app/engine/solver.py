@@ -85,7 +85,7 @@ class CharmsatSolver:
                 lower_bound_cabinets=lower_bound_cabs
             )
 
-        cable_assignments, num_cabs_used = stage_a_res
+        cable_assignments, num_cabs_used, status_a = stage_a_res
 
         # Stage B: Slot interval packing per CIOC
         stage_b_res, stage_b_tq = self._solve_stage_b(
@@ -104,14 +104,13 @@ class CharmsatSolver:
                 runtime_s=time.time() - start_time,
                 lower_bound_cabinets=lower_bound_cabs
             )
+        stage_b_starts, status_b = stage_b_res
 
         # Build final AllocatedSlot records
-        allocations = self._build_allocations(cable_list, cable_assignments, stage_b_res)
+        allocations = self._build_allocations(cable_list, cable_assignments, stage_b_starts)
 
         # Independent Checker run
         violations = self.checker.verify(allocations, signals)
-
-        runtime = time.time() - start_time
 
         # Calculate revision diff if Rev A exists
         rev_summary = None
@@ -122,6 +121,14 @@ class CharmsatSolver:
                 signals=signals,
                 cable_sizes=cable_sizes
             )
+
+        # Verdict is computed from the real CP-SAT statuses, never hard-coded:
+        # OPTIMAL only if every stage proved optimality, else FEASIBLE.
+        runtime = time.time() - start_time
+        if status_a == cp_model.OPTIMAL and status_b == cp_model.OPTIMAL:
+            real_status = "OPTIMAL"
+        else:
+            real_status = "FEASIBLE"
 
         return AllocResult(
             success=len(violations) == 0,
@@ -134,7 +141,7 @@ class CharmsatSolver:
             spare_pct_actual=round(100.0 * (1.0 - len(allocations) / (num_cabs_used * 384)), 1) if num_cabs_used else 0.0,
             runtime_s=round(runtime, 3),
             lower_bound_cabinets=lower_bound_cabs,
-            solver_status="OPTIMAL",
+            solver_status=real_status,
             rev_summary=rev_summary
         )
 
@@ -144,9 +151,10 @@ class CharmsatSolver:
         lower_bound_cabs: int,
         prev_allocation: Optional[List[AllocatedSlot]] = None,
         time_limit_s: float = 15.0
-    ) -> Tuple[Optional[Tuple[Dict[str, Tuple[int, int]], int]], Optional[TQ]]:
+    ) -> Tuple[Optional[Tuple[Dict[str, Tuple[int, int]], int, int]], Optional[TQ]]:
         """
         Stage A: Assigns each cable c to (cabinet k, cioc j).
+        Returns ((assignments, num_cabinets, cp_sat_status), tq).
         """
         max_cabs = max(lower_bound_cabs + 2, int(lower_bound_cabs * 1.3) + 1)
         total_ciocs = max_cabs * 4
@@ -273,7 +281,7 @@ class CharmsatSolver:
                     cabs_used.add(cab)
                     break
 
-        return (assignments, len(cabs_used)), None
+        return (assignments, len(cabs_used), status), None
 
     def _solve_stage_b(
         self,
@@ -281,10 +289,10 @@ class CharmsatSolver:
         cable_assignments: Dict[str, Tuple[int, int]],
         prev_allocation: Optional[List[AllocatedSlot]] = None,
         time_limit_s: float = 15.0
-    ) -> Tuple[Optional[Dict[str, int]], Optional[TQ]]:
+    ) -> Tuple[Optional[Tuple[Dict[str, int], int]], Optional[TQ]]:
         """
         Stage B: 1-D Interval Packing per CIOC (96 slots).
-        Returns dict: cable_id -> start_slot_in_cioc (0..95)
+        Returns ((cable_id -> start_slot_in_cioc (0..95), worst cp_sat_status), tq).
         """
         cioc_cables: Dict[Tuple[int, int], List[Cable]] = defaultdict(list)
         for c in cable_list:
@@ -299,6 +307,7 @@ class CharmsatSolver:
                     prev_start_slots[s.cable] = slot_in_cioc
 
         final_starts: Dict[str, int] = {}
+        worst_status = cp_model.OPTIMAL
 
         for (cab, cioc), c_sublist in cioc_cables.items():
             model = cp_model.CpModel()
@@ -356,8 +365,10 @@ class CharmsatSolver:
 
             for c in c_sublist:
                 final_starts[c.id] = solver.Value(starts[c.id])
+            if status == cp_model.FEASIBLE:
+                worst_status = cp_model.FEASIBLE
 
-        return final_starts, None
+        return (final_starts, worst_status), None
 
     def _build_allocations(
         self,
@@ -522,6 +533,6 @@ class CharmsatSolver:
             unchanged_count=len(common_tags) - len(moves_detail),
             affected_cabinets=sorted(list(affected_cabinets)),
             moves_ours=len(moves_detail),
-            moves_from_scratch=max(moves_scratch_count, len(moves_detail) * 4 + 15),
+            moves_from_scratch=moves_scratch_count,
             moves_detail=moves_detail
         )

@@ -18,14 +18,8 @@ export const ScreenBenchmark: React.FC = () => {
   const [signalCount, setSignalCount] = useState<number>(1000);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [benchmarkData, setBenchmarkData] = useState<any[] | null>(null);
-  const [lineChartData, setLineChartData] = useState<any[]>([
-    { signals: 200, b0: 0.01, b1: 0.04, charmsat: 0.35 },
-    { signals: 500, b0: 0.03, b1: 0.12, charmsat: 0.82 },
-    { signals: 1000, b0: 0.06, b1: 0.28, charmsat: 1.62 },
-    { signals: 2500, b0: 0.15, b1: 0.75, charmsat: 4.10 },
-    { signals: 5000, b0: 0.32, b1: 1.60, charmsat: 11.40 },
-    { signals: 10000, b0: 0.68, b1: 3.40, charmsat: 38.20 },
-  ]);
+  // No typed-in numbers: charts stay empty until a real run returns.
+  const [lineChartData, setLineChartData] = useState<any[]>([]);
 
   const handleRunBenchmark = async () => {
     setIsRunning(true);
@@ -42,36 +36,9 @@ export const ScreenBenchmark: React.FC = () => {
     }
   };
 
-  // Default initial table if not yet run
-  const activeTable = benchmarkData || [
-    {
-      engine: 'B0 Greedy (File Order)',
-      violations: 142,
-      cabinets: 4,
-      cabinets_vs_lb: '4 / 4',
-      rev_b_moves: 850,
-      runtime_s: 0.06,
-      verdict: 'FAIL (Violates Rules)',
-    },
-    {
-      engine: 'B1 Greedy (Grouped + A/B)',
-      violations: 0,
-      cabinets: 6,
-      cabinets_vs_lb: '6 / 4',
-      rev_b_moves: 420,
-      runtime_s: 0.28,
-      verdict: 'HEURISTIC (+50% Cabinets)',
-    },
-    {
-      engine: 'CHARMSAT (CP-SAT Solver)',
-      violations: 0,
-      cabinets: 4,
-      cabinets_vs_lb: '4 / 4',
-      rev_b_moves: 26,
-      runtime_s: 1.62,
-      verdict: 'OPTIMAL (0 Violations, Min Moves)',
-    },
-  ];
+  // Honest empty state: nothing is shown before a real run.
+  const activeTable = benchmarkData || [];
+  const hasRun = benchmarkData !== null;
 
   // Bar chart data for Violations & Rev B Moves
   const barData = activeTable.map((row) => ({
@@ -139,6 +106,13 @@ export const ScreenBenchmark: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#132A1C]">
+              {!hasRun && (
+                <tr>
+                  <td colSpan={6} className="py-8 px-3 text-center text-xs font-mono text-[#6B8E78]">
+                    No benchmark run yet — click RUN BENCHMARK or run `make bench`. No numbers are shown until code measures them.
+                  </td>
+                </tr>
+              )}
               {activeTable.map((row, idx) => {
                 const isCharmsat = row.engine.includes('CHARMSAT');
                 return (
