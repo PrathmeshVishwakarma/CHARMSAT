@@ -502,6 +502,18 @@ def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: 
         "rev_b_result": result_b.model_dump()
     }
 
+@app.get("/api/bench/latest")
+def bench_latest():
+    """Benchmark table + chart as written by `make bench` (P5-1)."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path("bench/results.json")
+    if not p.exists():
+        return {"table": [], "chart": [], "meta": {},
+                "empty": "No benchmark run yet: run `make bench`."}
+    return _json.loads(p.read_text())
+
+
 @app.post("/api/revise")
 async def revise_uploaded(file: UploadFile = File(...), sheet: Optional[str] = Form(None),
                           overrides_json: Optional[str] = Form(None)):

@@ -4,7 +4,7 @@ import time
 from app.models.domain import Signal, Cable, AllocatedSlot, AllocResult, TQ
 from app.models.rules import RuleSetConfig
 from app.engine.naming import NameGenerator
-from app.engine.hardware import HW_TABLE
+from app.engine.hardware import HW_TABLE, hardware_for
 from app.engine.solve.bridge import rules_to_ref
 
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BarChart3, Play, Clock, ShieldCheck, Zap, AlertTriangle } from 'lucide-react';
 import {
   BarChart,
@@ -39,6 +39,29 @@ export const ScreenBenchmark: React.FC = () => {
   // Honest empty state: nothing is shown before a real run.
   const activeTable = benchmarkData || [];
   const hasRun = benchmarkData !== null;
+  const [benchMeta, setBenchMeta] = useState<string | null>(null);
+
+  // Load the measured table written by `make bench` (P5-1).
+  useEffect(() => {
+    API.benchLatest()
+      .then((latest: any) => {
+        if (latest && latest.table && latest.table.length > 0) {
+          setBenchmarkData(
+            latest.table.map((r: any) => ({
+              ...r,
+              cabinets_vs_lb: r.cabinets_vs_lb || `${r.cabinets} / ${r.lb}`,
+            }))
+          );
+          if (latest.chart && latest.chart.length > 0) setLineChartData(latest.chart);
+          if (latest.meta) {
+            setBenchMeta(
+              `measured ${latest.meta.date?.slice(0, 10)} · ${latest.meta.cpu_count} CPUs · commit ${latest.meta.commit}`
+            );
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Bar chart data for Violations & Rev B Moves
   const barData = activeTable.map((row) => ({
@@ -88,10 +111,12 @@ export const ScreenBenchmark: React.FC = () => {
 
       {/* Main Comparative Benchmark Table */}
       <div className="bg-[#0B1710] border border-[#1E3A2B] rounded-xl p-5 shadow-lg space-y-4">
-        <h4 className="text-xs font-mono font-bold text-white flex items-center justify-between">
-          <span>LIVE EXPERIMENTAL MEASUREMENTS ({signalCount.toLocaleString()} SIGNALS)</span>
-          <span className="text-[10px] font-mono text-[#587B64]">Independent Checker Re-derived</span>
-        </h4>
+          <h4 className="text-xs font-mono font-bold text-white flex items-center justify-between">
+            <span>LIVE EXPERIMENTAL MEASUREMENTS ({signalCount.toLocaleString()} SIGNALS)</span>
+            <span className="text-[10px] font-mono text-[#587B64]">
+              {benchMeta || 'Independent Checker Re-derived'}
+            </span>
+          </h4>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs font-mono">

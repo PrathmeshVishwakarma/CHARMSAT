@@ -225,6 +225,11 @@ export const API = {
     return res.json();
   },
 
+  async benchLatest() {
+    const res = await fetch('/api/bench/latest');
+    return res.json();
+  },
+
   async initDemo() {
     const res = await fetch('/api/demo-init');
     return res.json();
