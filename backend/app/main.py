@@ -268,9 +268,9 @@ def run_allocation(req: AllocateRequest):
     if not cable_sizes and session_state.get("cables_info_a"):
         cable_sizes = {c["cable_id"]: c["size"] for c in session_state["cables_info_a"]}
 
-    # Step 1: Validate data and generate data TQs
+    # Step 1: Validate data and generate data TQs (+ coverage ledger)
     validator = DataValidator(spare_pct=rules_to_use.spare_capacity.spare_percentage)
-    valid_signals, data_tqs = validator.validate(signals, cable_sizes)
+    valid_signals, data_tqs, ledger = validator.validate(signals, cable_sizes)
 
     # Step 2: Solve with CP-SAT
     solver = CharmsatSolver(rules_to_use)
@@ -284,10 +284,13 @@ def run_allocation(req: AllocateRequest):
 
     # Merge data TQs with solver TQs
     result.tqs.extend(data_tqs)
-    # Recalculate coverage
+    # Coverage (S2-8): every input tag is either placed or held by a TQ.
+    # placed + held = ledger-verified; anything else is a pipeline bug.
+    placed_tags = {s.tag for s in result.allocations if s.tag}
+    held_tags = {t for t, v in ledger.items() if v.startswith("held:")}
+    accounted = {t for t in ledger if ledger[t] == "placed" and t in placed_tags} | held_tags
     total_in = len(signals)
-    covered = len([s for s in result.allocations if not s.is_spare]) + sum(len(t.items) for t in result.tqs)
-    result.coverage_pct = round(min(100.0, 100.0 * covered / max(1, total_in)), 1)
+    result.coverage_pct = round(100.0 * len(accounted) / max(1, total_in), 1)
 
     if req.use_rev_a_as_hints:
         session_state["alloc_b"] = result

@@ -96,13 +96,16 @@ def test_data_validator_tq_generation():
         Signal(tag="TAG-3", io_type="DI", cable="CBL-2", pair=99), # pair overflow
     ]
     cable_sizes = {"CBL-1": 12, "CBL-2": 6}
-    valid, tqs = validator.validate(bad_signals, cable_sizes)
+    valid, tqs, ledger = validator.validate(bad_signals, cable_sizes)
 
     assert len(tqs) >= 3
     tq_ids = {t.id for t in tqs}
     assert "TQ-DAT-01" in tq_ids  # blank type
-    assert "TQ-DAT-02" in tq_ids  # duplicate tag
-    assert "TQ-DAT-03" in tq_ids  # pair overflow
+    assert "TQ-DUP-TAG-2" in tq_ids  # duplicate tag
+    assert "TQ-PAIR-CBL-2" in tq_ids  # pair overflow
+    # Ledger covers every input row
+    assert set(ledger) == {"TAG-1", "TAG-2", "TAG-3"}
+    assert ledger["TAG-2"].startswith("held:")
 
 def test_fuzzy_column_mapper():
     mapper = ColumnAutoMapper()

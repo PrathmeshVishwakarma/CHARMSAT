@@ -63,10 +63,13 @@ class Violation(BaseModel):
 
 class TQ(BaseModel):
     id: str
-    kind: str  # 'data' | 'rule_conflict' | 'capacity'
+    kind: str  # 'data' | 'rule_conflict' | 'capacity' | 'hardware'
     items: List[str] = Field(default_factory=list)
     rule_ids: List[str] = Field(default_factory=list)
     message: str
+    tags: List[str] = Field(default_factory=list)  # affected tags (all, never truncated)
+    rows: List[int] = Field(default_factory=list)  # Excel row numbers (1-based)
+    options: List[str] = Field(default_factory=list)  # engineer fix options
 
 class RevisionMoveDetail(BaseModel):
     tag: str
