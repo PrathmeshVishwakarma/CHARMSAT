@@ -198,6 +198,29 @@ class ConfirmMappingRequest(BaseModel):
     overrides: Optional[Dict[str, Optional[str]]] = None  # detected header -> canonical (None = ignore)
 
 
+def _parse_upload_to_signals(raw: bytes, filename: str, overrides=None, sheet=None):
+    """Shared upload parsing: sheets + header + mapping + signals + sizes."""
+    sheets = read_table(raw, filename or "upload.xlsx")
+    if not sheets:
+        raise HTTPException(status_code=400, detail="No readable sheets in file")
+    sh = next((s for s in sheets if s.name == (sheet or sheets[0].name)), sheets[0])
+    h_idx, _, header = find_header_row(sh.grid, SYNONYM_DICTIONARY)
+    if overrides:
+        mapping = {h: overrides.get(h) for h in header}
+    else:
+        cols = [[row[i] if i < len(row) else "" for _, row in data_rows(sh.grid, h_idx)]
+                for i in range(len(header))]
+        proposal = propose_sheet_mapping(header, cols)
+        if proposal.missing_required:
+            raise HTTPException(
+                status_code=400,
+                detail={"missing_required": proposal.missing_required,
+                        "matches": proposal.model_dump()["matches"],
+                        "hint": "Confirm column overrides and re-post."})
+        mapping = {m.detected_column: m.mapped_canonical for m in proposal.matches}
+    return sh, h_idx, header, mapping, apply_mapping(sh.grid, h_idx, mapping)
+
+
 @app.post("/api/upload")
 async def upload_io_list(file: UploadFile = File(...)):
     """Real IO-list upload (P1-1): xlsx/xlsm/xls/csv, multi-sheet.
@@ -477,6 +500,72 @@ def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: 
     return {
         "diff_meta": diff_meta,
         "rev_b_result": result_b.model_dump()
+    }
+
+@app.post("/api/revise")
+async def revise_uploaded(file: UploadFile = File(...), sheet: Optional[str] = Form(None),
+                          overrides_json: Optional[str] = Form(None)):
+    """Rev B as a real uploaded file (P2-2): same mapping flow as upload,
+    Rev A cable sizes carried unless Rev B's size column changes them,
+    keep-literal revision + measured from-scratch baseline + tag-level diff.
+    """
+    import json as _json
+    signals_a = session_state.get("signals_a")
+    if not signals_a or not session_state.get("placements_a"):
+        raise HTTPException(status_code=400, detail="Allocate Rev A first")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    overrides = _json.loads(overrides_json) if overrides_json else None
+    try:
+        sh, h_idx, header, mapping, (signals_b, sizes_b_new) = _parse_upload_to_signals(
+            raw, file.filename or "rev_b.xlsx", overrides, sheet)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    # Sizes: Rev A carried, Rev B size column wins per cable (S1-4).
+    sizes_a = {c["cable_id"]: c["size"] for c in session_state.get("cables_info_a", [])}
+    sizes_a.update(session_state.get("last_sizes", {}))
+    cable_sizes_b = dict(sizes_a)
+    cable_sizes_b.update(sizes_b_new)
+
+    validator = DataValidator()
+    valid_b, data_tqs_b, _ = validator.validate(signals_b, cable_sizes_b)
+    result_b, prev_b, raw_b = solve_revision(
+        valid_b, cable_sizes_b, current_rules,
+        session_state.get("placements_a") or {},
+        signals_a, session_state.get("rows_a") or [],
+        to_core_signals(signals_a),
+    )
+    seen = {t.id for t in data_tqs_b}
+    result_b.tqs = data_tqs_b + [t for t in result_b.tqs if t.id not in seen]
+
+    # Tag-level diff: added / deleted / changed-data / changed-hw / unchanged.
+    a_by_tag = {s.tag: s for s in signals_a}
+    b_by_tag = {s.tag: s for s in signals_b}
+    tags_a, tags_b = set(a_by_tag), set(b_by_tag)
+    added = sorted(tags_b - tags_a)
+    deleted = sorted(tags_a - tags_b)
+    changed_data, changed_hw = [], []
+    for t in sorted(tags_a & tags_b):
+        a, b = a_by_tag[t], b_by_tag[t]
+        if (a.cable, a.pair) != (b.cable, b.pair):
+            changed_data.append(t)
+        elif (a.io_type, a.subtype or "") != (b.io_type, b.subtype or ""):
+            changed_hw.append(t)
+    unchanged = sorted(tags_a & tags_b - set(changed_data) - set(changed_hw))
+
+    session_state["signals_b"] = signals_b
+    session_state["alloc_b"] = result_b
+    session_state["placements_b"] = prev_b
+    session_state["rows_b"] = raw_b.get("rows", [])
+
+    return {
+        "diff": {"added": added, "deleted": deleted, "changed_data": changed_data,
+                 "changed_hw": changed_hw, "unchanged": unchanged},
+        "rev_b_result": result_b.model_dump(),
     }
 
 @app.post("/api/benchmark/run")

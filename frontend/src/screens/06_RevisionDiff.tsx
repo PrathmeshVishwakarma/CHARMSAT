@@ -1,20 +1,24 @@
-import React, { useState } from 'react';
-import { GitCompare, RefreshCw, AlertTriangle, ArrowRight, CheckCircle2, ShieldCheck } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { GitCompare, RefreshCw, AlertTriangle, ArrowRight, CheckCircle2, ShieldCheck, UploadCloud } from 'lucide-react';
 import { API, AllocResult, RevisionSummary } from '../api';
 import { CabinetGrid } from '../components/CabinetGrid';
 
 interface RevisionDiffProps {
   allocResultB: AllocResult | null;
   onGenerateRevB: () => void;
+  onUploadRevB: (file: File) => Promise<void>;
   isLoading: boolean;
 }
 
 export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
   allocResultB,
   onGenerateRevB,
+  onUploadRevB,
   isLoading
 }) => {
   const revSummary: RevisionSummary | null = allocResultB?.rev_summary || null;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Moved tags set for highlighting in CabinetGrid
   const movedTagsSet = React.useMemo(() => {
@@ -36,6 +40,33 @@ export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
           </p>
         </div>
 
+        <div className="flex items-center gap-3">
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".xlsx,.xls,.xlsm,.csv"
+          className="hidden"
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (!f) return;
+            setUploadError(null);
+            try {
+              await onUploadRevB(f);
+            } catch (err: any) {
+              setUploadError(err.message || 'Revise failed');
+            }
+          }}
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={isLoading}
+          className="px-5 py-2.5 rounded-lg bg-[#0E2A18] hover:bg-[#153825] border border-[#38BDF8] text-xs font-mono font-bold text-[#7DD3FC] flex items-center gap-2 transition-all"
+        >
+          <UploadCloud className="w-3.5 h-3.5" />
+          <span>UPLOAD REV B & REVISE</span>
+        </button>
+
         <button
           onClick={onGenerateRevB}
           disabled={isLoading}
@@ -44,6 +75,10 @@ export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
           <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
           <span>GENERATE & SOLVE REV B</span>
         </button>
+        </div>
+        {uploadError && (
+          <div className="text-[11px] font-mono text-red-400 mt-2">{uploadError}</div>
+        )}
       </div>
 
       {/* Diff Summary Cards */}

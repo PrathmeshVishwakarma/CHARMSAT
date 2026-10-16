@@ -187,6 +187,17 @@ export const API = {
     return res.json();
   },
 
+  async reviseRevB(file: File) {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/revise', { method: 'POST', body: form });
+    if (!res.ok) {
+      const body = await res.json();
+      throw new Error(typeof body.detail === 'string' ? body.detail : 'Revise failed');
+    }
+    return res.json();
+  },
+
   async generateRevB(params: {
     add_pct?: number;
     del_pct?: number;
