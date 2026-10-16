@@ -141,6 +141,29 @@ export const API = {
     return res.json();
   },
 
+  async uploadIOList(file: File) {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: form });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Upload failed');
+    return res.json();
+  },
+
+  async confirmMapping(payload: {
+    upload_id: string;
+    sheet?: string;
+    header_row?: number;
+    overrides?: Record<string, string | null>;
+  }) {
+    const res = await fetch('/api/mapping/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Confirm failed');
+    return res.json();
+  },
+
   async allocate(params: {
     signals?: Signal[];
     cable_sizes?: Record<string, number>;

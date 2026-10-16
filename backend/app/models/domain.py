@@ -11,6 +11,8 @@ class Signal:
     pair: int = 1
     group: Optional[str] = None
     seg: Optional[str] = None  # 'A' or 'B' or None
+    row_no: int = 0  # original Excel row number (1-based) for TQ provenance
+    extra: Dict[str, str] = field(default_factory=dict)  # unmapped columns, usable by rules
 
 @dataclass
 class Cable:

@@ -1,4 +1,5 @@
 import time
+import uuid
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,9 @@ from app.engine.naming import NameGenerator
 from app.engine.excel_io import ExcelIO
 from app.engine.storage import StorageEngine
 from app.engine.rule_assistant import RuleAssistant
+from app.engine.io.reader import read_table, find_header_row, data_rows
+from app.engine.mapper import propose_mapping as propose_sheet_mapping, apply_mapping
+from app.engine.mapper import SYNONYM_DICTIONARY
 
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -143,6 +147,106 @@ def map_columns(req: MapColumnsRequest):
     mapper = ColumnAutoMapper()
     result = mapper.map_columns(req.columns)
     return result.model_dump()
+
+
+class ConfirmMappingRequest(BaseModel):
+    upload_id: str
+    sheet: Optional[str] = None
+    header_row: Optional[int] = None  # 0-based grid index; auto-detected if omitted
+    overrides: Optional[Dict[str, Optional[str]]] = None  # detected header -> canonical (None = ignore)
+
+
+@app.post("/api/upload")
+async def upload_io_list(file: UploadFile = File(...)):
+    """Real IO-list upload (P1-1): xlsx/xlsm/xls/csv, multi-sheet.
+
+    Finds the header row per sheet and proposes a column mapping with
+    evidence. Nothing is allocated yet; confirm via /api/mapping/confirm.
+    The raw file is stored under data/uploads/{upload_id}/ (gitignored).
+    """
+    from pathlib import Path as _Path
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    try:
+        sheets = read_table(raw, file.filename or "upload.xlsx")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+    if not sheets:
+        raise HTTPException(status_code=400, detail="No readable sheets in file")
+
+    upload_id = uuid.uuid4().hex[:12]
+    updir = _Path("data/uploads") / upload_id
+    updir.mkdir(parents=True, exist_ok=True)
+    (updir / (file.filename or "upload.xlsx")).write_bytes(raw)
+
+    session_state.setdefault("uploads", {})[upload_id] = {
+        "filename": file.filename, "sheets": sheets,
+    }
+
+    out_sheets = []
+    for sh in sheets:
+        try:
+            h_idx, h_score, header = find_header_row(sh.grid, SYNONYM_DICTIONARY)
+        except ValueError as e:
+            out_sheets.append({"name": sh.name, "n_rows": len(sh.grid),
+                               "error": str(e), "mapping": None})
+            continue
+        cols = [[row[i] if i < len(row) else "" for _, row in data_rows(sh.grid, h_idx)]
+                for i in range(len(header))]
+        proposal = propose_sheet_mapping(header, cols)
+        preview = [dict(zip(header, (row + [""] * len(header))[:len(header)]))
+                   for _, row in data_rows(sh.grid, h_idx)[:15]]
+        out_sheets.append({
+            "name": sh.name, "n_rows": len(data_rows(sh.grid, h_idx)),
+            "header_row": h_idx, "header_score": round(h_score, 2),
+            "header_cells": header,
+            "mapping": proposal.model_dump(), "preview_rows": preview,
+        })
+    return {"upload_id": upload_id, "filename": file.filename, "sheets": out_sheets}
+
+
+@app.post("/api/mapping/confirm")
+def confirm_mapping(req: ConfirmMappingRequest):
+    """Apply the confirmed mapping to the uploaded data (P1-2).
+
+    Overrides come from the mapping screen dropdowns. Stores real Signals +
+    cable sizes in the session, exactly like the demo-data path.
+    """
+    uploads = session_state.get("uploads", {})
+    up = uploads.get(req.upload_id)
+    if not up:
+        raise HTTPException(status_code=404, detail="Unknown upload_id; upload the file again")
+    sheet = next((s for s in up["sheets"] if s.name == (req.sheet or up["sheets"][0].name)),
+                 up["sheets"][0])
+    h_idx = req.header_row if req.header_row is not None else find_header_row(
+        sheet.grid, SYNONYM_DICTIONARY)[0]
+    header = sheet.grid[h_idx]
+    if req.overrides:
+        mapping = {h: req.overrides.get(h) for h in header}
+    else:
+        cols = [[row[i] if i < len(row) else "" for _, row in data_rows(sheet.grid, h_idx)]
+                for i in range(len(header))]
+        proposal = propose_sheet_mapping(header, cols)
+        mapping = {m.detected_column: m.mapped_canonical for m in proposal.matches}
+    signals, cable_sizes = apply_mapping(sheet.grid, h_idx, mapping)
+
+    session_state["signals_a"] = signals
+    session_state["cables_info_a"] = [{"cable_id": c, "size": s} for c, s in cable_sizes.items()]
+    session_state["upload_mapping"] = {"upload_id": req.upload_id, "sheet": sheet.name,
+                                       "header_row": h_idx, "mapping": mapping}
+    return {
+        "signal_count": len(signals),
+        "cable_count": len({s.cable for s in signals if s.cable}),
+        "columns": header,
+        "sample_rows": [dict(zip(header, [s.tag, s.io_type, s.subtype or "", s.cable,
+                                          s.pair, cable_sizes.get(s.cable, ""),
+                                          s.group or "", s.seg or ""])) for s in signals[:15]],
+        "raw_signals": [dict(tag=s.tag, io_type=s.io_type, subtype=s.subtype, cable=s.cable,
+                             pair=s.pair, group=s.group, seg=s.seg,
+                             row_no=s.row_no, extra=s.extra) for s in signals],
+        "cable_sizes": cable_sizes,
+    }
 
 @app.post("/api/allocate")
 def run_allocation(req: AllocateRequest):
