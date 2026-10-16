@@ -64,30 +64,28 @@ def test_hand_planted_violation_caught():
     assert any(v.rule_id == rules.cable_contiguity.id for v in viols_split)
 
 def test_determinism_same_seed_gives_identical_output():
-    rules = RuleSetConfig()
-    
-    # Run 1
-    gen1 = SyntheticGenerator(seed=555)
-    sig1, c_info1 = gen1.generate_dataset(n_signals=300)
-    c_sizes1 = {c["cable_id"]: c["size"] for c in c_info1}
-    solv1 = CharmsatSolver(rules)
-    res1 = solv1.solve(sig1, c_sizes1)
+    """Same seed + same rules => identical allocation hash in TWO SEPARATE
+    processes (P1-5). An in-process comparison cannot catch multi-worker or
+    wall-clock non-determinism."""
+    import subprocess
+    import sys
+    prog = (
+        "import sys, json, hashlib; sys.path.insert(0, 'backend');"
+        "from app.models.rules import RuleSetConfig;"
+        "from app.engine.generator import SyntheticGenerator;"
+        "from app.engine.solver import CharmsatSolver;"
+        "gen = SyntheticGenerator(seed=555);"
+        "sig, c_info = gen.generate_dataset(n_signals=300);"
+        "c_sizes = {c['cable_id']: c['size'] for c in c_info};"
+        "res = CharmsatSolver(RuleSetConfig()).solve(sig, c_sizes);"
+        "print(hashlib.sha256(json.dumps([a.model_dump() for a in res.allocations], sort_keys=True).encode()).hexdigest())"
+    )
+    hashes = []
+    for _ in range(2):
+        out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True, check=True)
+        hashes.append(out.stdout.strip())
 
-    # Run 2
-    gen2 = SyntheticGenerator(seed=555)
-    sig2, c_info2 = gen2.generate_dataset(n_signals=300)
-    c_sizes2 = {c["cable_id"]: c["size"] for c in c_info2}
-    solv2 = CharmsatSolver(rules)
-    res2 = solv2.solve(sig2, c_sizes2)
-
-    # Serialize allocations and compare sha256 hash
-    json1 = json.dumps([a.model_dump() for a in res1.allocations], sort_keys=True)
-    json2 = json.dumps([a.model_dump() for a in res2.allocations], sort_keys=True)
-
-    hash1 = hashlib.sha256(json1.encode()).hexdigest()
-    hash2 = hashlib.sha256(json2.encode()).hexdigest()
-
-    assert hash1 == hash2, "Allocations must be strictly deterministic given the same seed and input"
+    assert hashes[0] == hashes[1], "Allocations must be strictly deterministic given the same seed and input"
 
 def test_data_validator_tq_generation():
     validator = DataValidator(spare_pct=10.0)

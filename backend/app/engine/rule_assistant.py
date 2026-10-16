@@ -1,3 +1,4 @@
+import hashlib
 import re
 from typing import Optional, Dict, Any, Tuple
 from app.models.rules import GenericRuleConfig
@@ -43,7 +44,10 @@ class RuleAssistant:
             else:
                 k_val = 2
 
-        rule_id = f"RULE-GEN-{abs(hash(text)) % 900 + 100}"
+        # Stable id from content hash (P1-5). Never hash(): it is salted per
+        # process, so ids changed on every restart.
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        rule_id = f"RULE-GEN-{int(digest[:8], 16) % 900 + 100}"
         name = f"Assistant: {attr.capitalize()} {relation.replace('_', ' ').capitalize()} per {level.capitalize()}"
 
         draft = GenericRuleConfig(

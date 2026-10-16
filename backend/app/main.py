@@ -211,7 +211,7 @@ def plant_violation(req: PlantViolationRequest):
     }
 
 @app.post("/api/revision/generate-b")
-def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: float = 0.015, recable_pct: float = 0.01):
+def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: float = 0.015, recable_pct: float = 0.0):
     signals_a = session_state.get("signals_a")
     if not signals_a:
         gen = SyntheticGenerator(seed=42)
@@ -219,19 +219,21 @@ def generate_revision_b(add_pct: float = 0.05, del_pct: float = 0.02, type_pct: 
         session_state["signals_a"] = signals_a
         session_state["cables_info_a"] = cab_info
 
+    cables_a = {c["cable_id"]: c["size"] for c in session_state.get("cables_info_a", [])} or None
     gen = SyntheticGenerator(seed=42)
     signals_b, diff_meta = gen.generate_revision_b(
         rev_a_signals=signals_a,
         add_pct=add_pct,
         del_pct=del_pct,
         type_change_pct=type_pct,
-        recable_pct=recable_pct
+        recable_pct=recable_pct,
+        cable_sizes=cables_a,
     )
 
     session_state["signals_b"] = signals_b
 
-    # Allocate Rev B with min-move
-    cable_sizes_b = {s.cable: 24 if s.pair > 12 else 12 if s.pair > 6 else 6 if s.pair > 2 else 2 for s in signals_b}
+    # Allocate Rev B with min-move; Rev A cable sizes are carried, never inferred
+    cable_sizes_b = diff_meta["cable_sizes"]
     solver = CharmsatSolver(current_rules)
     prev_alloc = session_state.get("alloc_a").allocations if session_state.get("alloc_a") else None
 
@@ -253,9 +255,9 @@ def run_benchmark(req: BenchmarkRequest):
     signals, cables_info = gen.generate_dataset(n_signals=req.signal_count)
     cable_sizes = {c["cable_id"]: c["size"] for c in cables_info}
 
-    # Generate Rev B for comparison
-    signals_b, _ = gen.generate_revision_b(signals)
-    cable_sizes_b = {s.cable: 24 if s.pair > 12 else 12 if s.pair > 6 else 6 if s.pair > 2 else 2 for s in signals_b}
+    # Generate Rev B for comparison (sizes carried from Rev A, never inferred)
+    signals_b, diff_meta_b = gen.generate_revision_b(signals, cable_sizes=cable_sizes)
+    cable_sizes_b = diff_meta_b["cable_sizes"]
 
     baselines = BaselineEngine(current_rules)
     solver = CharmsatSolver(current_rules)
@@ -386,10 +388,10 @@ def demo_init():
     res_a = solver.solve(sig_a, c_sizes_a)
     session_state["alloc_a"] = res_a
 
-    # Generate Rev B
-    sig_b, diff_meta = gen.generate_revision_b(sig_a)
+    # Generate Rev B (sizes carried from Rev A, never inferred per signal)
+    sig_b, diff_meta = gen.generate_revision_b(sig_a, cable_sizes=c_sizes_a)
     session_state["signals_b"] = sig_b
-    c_sizes_b = {s.cable: 24 if s.pair > 12 else 12 if s.pair > 6 else 6 if s.pair > 2 else 2 for s in sig_b}
+    c_sizes_b = diff_meta["cable_sizes"]
 
     res_b = solver.solve(sig_b, c_sizes_b, prev_allocation=res_a.allocations)
     session_state["alloc_b"] = res_b

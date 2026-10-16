@@ -254,10 +254,14 @@ class CharmsatSolver:
 
         model.Minimize(sum(obj_terms))
 
-        # Solve
+        # Solve: single worker + deterministic time limit + fixed seed, so the
+        # same input gives the same output in every process (P1-5). Never use
+        # interleave_search: experimental, crashed CP-SAT 9.15 (see blueprint).
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit_s
-        solver.parameters.num_workers = 4
+        solver.parameters.num_workers = 1
+        solver.parameters.max_deterministic_time = time_limit_s
+        solver.parameters.random_seed = 7
         status = solver.Solve(model)
 
         if status not in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
@@ -351,6 +355,9 @@ class CharmsatSolver:
 
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = max(1.0, time_limit_s / max(1, len(cioc_cables)))
+            solver.parameters.num_workers = 1
+            solver.parameters.max_deterministic_time = max(1.0, time_limit_s / max(1, len(cioc_cables)))
+            solver.parameters.random_seed = 7
             status = solver.Solve(model)
 
             if status not in [cp_model.OPTIMAL, cp_model.FEASIBLE]:

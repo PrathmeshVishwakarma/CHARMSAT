@@ -42,9 +42,9 @@ def run_benchmarks():
         sig_a, cab_info_a = gen.generate_dataset(n_signals=n)
         c_sizes_a = {c["cable_id"]: c["size"] for c in cab_info_a}
 
-        # Rev B signals
-        sig_b, _ = gen.generate_revision_b(sig_a)
-        c_sizes_b = {s.cable: 24 if s.pair > 12 else 12 if s.pair > 6 else 6 if s.pair > 2 else 2 for s in sig_b}
+        # Rev B signals (sizes carried from Rev A, never inferred per signal)
+        sig_b, diff_meta = gen.generate_revision_b(sig_a, cable_sizes=c_sizes_a)
+        c_sizes_b = diff_meta["cable_sizes"]
 
         lower_bound = max(1, (len(sig_a) + 344) // 345)
 
