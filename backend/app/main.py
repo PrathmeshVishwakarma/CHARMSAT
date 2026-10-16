@@ -345,13 +345,15 @@ def run_allocation(req: AllocateRequest):
     # Merge data TQs (validator's richer versions win on duplicate ids)
     seen_ids = {t.id for t in data_tqs}
     result.tqs = data_tqs + [t for t in result.tqs if t.id not in seen_ids]
-    # Coverage (S2-8): every input tag is either placed or held by a TQ.
-    # placed + held = ledger-verified; anything else is a pipeline bug.
+    # Coverage (S2-8): every input ROW is placed or held by a TQ. Row-based
+    # because duplicate rows collapse to one ledger tag (unique-tag math
+    # would read 99.8% on a file with one duplicate pair). On solver
+    # failure this honestly reads <100 alongside the failure TQs.
     placed_tags = {s.tag for s in result.allocations if s.tag}
     held_tags = {t for t, v in ledger.items() if v.startswith("held:")}
-    accounted = {t for t in ledger if ledger[t] == "placed" and t in placed_tags} | held_tags
+    accounted_rows = sum(1 for s in signals if s.tag in placed_tags or s.tag in held_tags)
     total_in = len(signals)
-    result.coverage_pct = round(100.0 * len(accounted) / max(1, total_in), 1)
+    result.coverage_pct = round(100.0 * accounted_rows / max(1, total_in), 1)
 
     # Independent verification on the WRITTEN file (P2-4): every allocation
     # result carries a checker report derived from the export, not memory.

@@ -17,9 +17,9 @@ bench:
 demo-check:
 	python scripts/demo_check.py
 
-# Run unit tests and hypothesis property verification
+# Run the full pytest suite (incl. Hypothesis property tests)
 test:
-	python -m pytest backend/app/tests/test_unit.py -v
+	python -m pytest backend/app/tests/ -q
 
 # Integrity guard: fail if any fabricated metric literal is (re-)introduced
 integrity:
