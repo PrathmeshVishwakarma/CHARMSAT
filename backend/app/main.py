@@ -465,29 +465,63 @@ def run_benchmark(req: BenchmarkRequest):
 
 @app.post("/api/export/excel")
 def export_excel():
+    """Export into a COPY of the allocation template (P2-3).
+
+    Uses the organiser template when data/organiser/template.xlsx (+ map)
+    exists locally, else the clearly labelled synthetic stand-in. Never
+    writes into the original. On template failure serves a plain workbook
+    whose filename signals the mismatch (MD 10.4).
+    """
+    import tempfile as _tf
+    from pathlib import Path as _Path
+    from app.engine.io.template_writer import (
+        load_template_map, write_template, write_plain_workbook,
+        rows_from_allocations, allocation_hash, TemplateWriteError)
     active_alloc = session_state.get("alloc_a")
     if not active_alloc:
         raise HTTPException(status_code=400, detail="No active allocation to export")
 
-    kpis = {
-        "cabinets_used": active_alloc.cabinets_used,
-        "lower_bound": active_alloc.lower_bound_cabinets,
-        "spare_pct": active_alloc.spare_pct_actual,
-        "runtime_s": active_alloc.runtime_s
-    }
+    org_t = _Path("data/organiser/template.xlsx")
+    org_m = _Path("data/templates/organiser_map.yaml")
+    if org_t.exists() and org_m.exists():
+        template, tmap, tname = org_t, load_template_map(org_m), "organiser"
+    else:
+        template = _Path("data/templates/synthetic_template.xlsx")
+        tmap = load_template_map(_Path("data/templates/synthetic_map.yaml"))
+        tname = "synthetic"
 
-    excel_bytes = ExcelIO.export_workbook(
-        allocations=active_alloc.allocations,
-        violations=active_alloc.violations,
-        tqs=active_alloc.tqs,
-        rev_summary=session_state.get("alloc_b").rev_summary if session_state.get("alloc_b") else None,
-        kpis=kpis
-    )
+    rows = rows_from_allocations(active_alloc.allocations)
+    ohash = allocation_hash(rows)
+    rev = session_state.get("alloc_b").rev_summary if session_state.get("alloc_b") else None
+    audit = [["output_hash", ohash], ["template", tname],
+             ["cabinets", active_alloc.cabinets_used],
+             ["lower_bound", active_alloc.lower_bound_cabinets],
+             ["solver_status", active_alloc.solver_status],
+             ["runtime_s", active_alloc.runtime_s],
+             ["coverage_pct", active_alloc.coverage_pct],
+             ["rev_moves_ours", rev.moves_ours if rev else ""],
+             ["rev_moves_scratch", rev.moves_from_scratch if rev else ""]]
+    tq_grid = [["id", "kind", "tags", "rows", "rules", "message"]] + [
+        [t.id, t.kind, ",".join(t.tags or t.items), ",".join(map(str, t.rows)),
+         ",".join(t.rule_ids), t.message] for t in active_alloc.tqs]
+
+    with _tf.TemporaryDirectory() as tmp:
+        out = _Path(tmp) / "out.xlsx"
+        try:
+            write_template(template, out, tmap, rows,
+                           extras={"TQ_LOG": tq_grid, "AUDIT": audit})
+            data = out.read_bytes()
+            fname = "CHARMSAT_DeltaV_IO_Allocation.xlsx"
+        except TemplateWriteError as e:
+            audit.append(["template_warning", str(e)])
+            write_plain_workbook(out, rows, active_alloc.tqs, audit)
+            data = out.read_bytes()
+            fname = "CHARMSAT_PLAIN_Allocation_TemplateMismatch.xlsx"
 
     return Response(
-        content=excel_bytes,
+        content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=CHARMSAT_DeltaV_IO_Allocation.xlsx"}
+        headers={"Content-Disposition": f"attachment; filename={fname}"}
     )
 
 @app.get("/api/demo-init")
