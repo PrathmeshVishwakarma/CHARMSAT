@@ -9,14 +9,21 @@
 
 ## 1. Overview & Architecture
 
-**CHARMSAT** is an offline, rule-driven hardware allocation and verification engine for Emerson DeltaV Electronic Marshalling. It automatically maps field signals into **Cabinet → CIOC → Baseplate → CHARM slot** with provable **zero rule violations**.
+**CHARMSAT** is an offline, rule-driven hardware allocation and verification engine for Emerson DeltaV Electronic Marshalling. It automatically maps field signals into **Cabinet → CIOC → Baseplate → CHARM slot** and re-checks the result with an independent verifier.
+
+> **Integrity status (P0, Oct 2026):** all previously hard-coded demo numbers
+> (benchmark table, revision 26/221, "1.00x optimal", "bit-for-bit
+> deterministic") have been removed from code and UI. Screens show measured
+> values or honest empty states; `make integrity` guards against regression.
+> Benchmarks are being re-measured — see `make bench`. Determinism across
+> processes is NOT yet guaranteed (fix in progress, P1-5).
 
 ### Core Pillars
 1. **Rule-Compiled Constraint Optimization:** Formulates signal allocation as a 1-D interval packing problem over atomic multi-pair cable blocks using **Google OR-Tools CP-SAT**.
-2. **Independent Verification Engine:** A completely separate verification module that shares zero code or data structures with the solver. Re-derives all 6 rules from scratch to prove 0 violations.
-3. **Minimum-Move Revisions (Rev A → Rev B):** Uses previous allocations as CP-SAT soft hints with lexicographic move penalties, pinning unchanged signals to eliminate site rewiring churn.
-4. **Unsat-Core Technical Queries (TQs):** When customer data or rule constraints are irreconcilably in conflict, CHARMSAT isolates the Minimal Unsatisfiable Subset (MUS) and explains it in plain English.
-5. **Wording-Only AI Rule Assistant:** Parses plain-English rule drafts into typed constraint configurations. AI *never* places signals.
+2. **Independent Verification Engine:** A separate verification module that re-derives the rules from the allocation output. Full package isolation (`backend/checker/` importing nothing from the app) is planned (P2-4); today it shares data models.
+3. **Minimum-Move Revisions (Rev A → Rev B):** Uses previous allocations as CP-SAT soft hints with move penalties. Measured move counts are currently high on stock Rev B data — the revision engine is being rebuilt (P2-2).
+4. **Technical Queries (TQs):** When customer data or rule constraints conflict, CHARMSAT returns TQs naming the conflict. Minimal-unsatisfiable-subset (MUS) explanations are planned (P4-1); current TQs are rule-conflict templates.
+5. **Wording-Only AI Rule Assistant:** Parses plain-English rule drafts into typed constraint configurations. AI *never* places signals. Drafted rules are not yet enforced by the solver (planned, P3).
 
 ---
 
@@ -25,8 +32,13 @@
 CHARMSAT runs 100% offline on a single laptop with a unified single-command launcher.
 
 ### Prerequisites
-- Python 3.11+
-- Node.js 18+ (pre-bundled build is already generated in `frontend/dist`)
+- Python 3.11+ (CI/dev env here: 3.10 — upgrade planned)
+- Node.js 18+ for the React UI
+
+> **Status (Oct 2026, integrity pass P0):** the API + solver run from a fresh
+> clone. The UI bundle is NOT pre-built — `frontend/dist/` does not exist in
+> the repo. Run `make install` (builds the UI) before `make run`.
+> (Planned: commit `dist/` on the demo branch for offline finale use.)
 
 ### Single-Command Start
 ```bash
@@ -49,6 +61,7 @@ Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)** in your browser. The uni
 make run    # Launches unified full-stack application at http://127.0.0.1:8000
 make bench  # Executes multi-scale empirical benchmark suite (run_bench.py)
 make test   # Runs pytest test suite, including Hypothesis property tests
+make integrity  # Fails if any fabricated metric literal is (re-)introduced
 ```
 
 ---
@@ -97,21 +110,24 @@ make test
 The test suite validates:
 - **Hypothesis Property Test:** For arbitrary valid synthetic inputs, the independent checker reports **0 violations** on CHARMSAT output.
 - **Hand-Planted Violation Test:** Verifies that deliberately tampered copies (A/B leak, broken contiguity) are immediately detected by the independent checker.
-- **Strict Determinism:** Identical input seeds yield bit-for-bit identical allocation hashes (`test_determinism_same_seed_gives_identical_output`).
+- **Determinism (IN PROGRESS, P1-5):** `test_determinism_same_seed_gives_identical_output` currently FAILS intermittently (also on pristine code) — CP-SAT runs multi-worker with wall-clock limits. Fix: single worker + deterministic time, as in `reference/charmsat_core.py`.
 - **Data Validator TQs:** Confirms blank IO types, duplicate tags, and pair overflows raise technical queries.
 
 ---
 
 ## 7. Deliverables & Screenshots
 
-All 8 workflow screens have been captured in **1920x1080** from live seeded runs and are stored in `/screenshots`:
+All 8 workflow screens have been captured in **1920x1080** and are stored in `/screenshots`.
+> **Stale:** these were captured from runs containing hard-coded numbers
+> (e.g. revision "26 vs 221 moves"). They will be retaken from real runs
+> after the engine rebuild (P2).
 - `01_mapping.png`: Drag-and-drop file ingestion with rapidfuzz confidence matching.
 - `02_rule_panel.png`: Parameterized rule cards, live YAML preview, and Natural Language Rule Assistant.
 - `03_allocation.png`: DeltaV physical cabinet matrix (4 CIOCs × 8 BPs × 12 slots) with KPI cards.
 - `04_checker.png`: Independent checker audit with **0 VIOLATIONS** badge and "Plant a Violation" credibility demo.
 - `05_tqs.png`: Technical Queries manager with expandable Minimal Conflicting Subsets (MUS).
-- `06_revision.png`: Rev A vs Rev B diff summary with side-by-side min-move comparison (26 vs 221 moves).
-- `07_benchmark.png`: Multi-algorithm comparison (B0 Greedy vs B1 Grouped vs CHARMSAT) with runtime curves.
+- `06_revision.png`: Rev A vs Rev B diff summary with side-by-side min-move comparison (STALE: shows hard-coded 26 vs 221 — will retake).
+- `07_benchmark.png`: Multi-algorithm comparison (B0 Greedy vs B1 Grouped vs CHARMSAT) with runtime curves (STALE — will retake from `make bench`).
 - `08_export.png`: Filled Excel workbook download with 5 pre-formatted worksheets.
 
 ---
