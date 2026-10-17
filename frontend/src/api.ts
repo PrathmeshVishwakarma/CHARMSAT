@@ -43,10 +43,14 @@ export interface Violation {
 
 export interface TQ {
   id: string;
-  kind: 'data' | 'rule_conflict' | 'capacity';
+  kind: 'data' | 'rule_conflict' | 'capacity' | 'hardware';
   items: string[];
   rule_ids: string[];
   message: string;
+  tags?: string[];
+  rows?: number[];
+  options?: string[];
+  mus?: string[];
 }
 
 export interface RevisionMoveDetail {
@@ -99,8 +103,13 @@ export const API = {
     return res.json();
   },
 
-  async updateRules(payload: { rules?: any; yaml?: string }) {
-    const res = await fetch('/api/rules', {
+  async getRulesSchema() {
+    const res = await fetch('/api/rules/schema');
+    return res.json();
+  },
+
+  async validateRules(payload: { rules?: any; yaml?: string }): Promise<{ ok: boolean; errors: string[] }> {
+    const res = await fetch('/api/rules/validate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -108,13 +117,54 @@ export const API = {
     return res.json();
   },
 
-  async parseNLRule(text: string) {
+  async updateRules(payload: { rules?: any; yaml?: string }) {
+    const res = await fetch('/api/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      const detail = body.detail;
+      const errors: string[] =
+        detail && detail.schema_errors ? detail.schema_errors
+          : typeof detail === 'string' ? [detail] : ['Rule document rejected by schema'];
+      const err: any = new Error('Rule set rejected by schema');
+      err.schemaErrors = errors;
+      throw err;
+    }
+    return body;
+  },
+
+  async parseNLRule(text: string, allowLlm: boolean = false) {
     const res = await fetch('/api/rules/parse-nl', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, allow_llm: allowLlm }),
     });
     return res.json();
+  },
+
+  async explainSignal(tag: string) {
+    const res = await fetch(`/api/explain/${encodeURIComponent(tag)}`);
+    if (!res.ok) throw new Error((await res.json()).detail || 'Explain failed');
+    return res.json();
+  },
+
+  async whatIf(payload: {
+    kind: string;
+    signals_extra?: any[];
+    rules?: any;
+    spare_percentage?: number;
+  }) {
+    const res = await fetch('/api/what-if', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'What-if failed');
+    return body;
   },
 
   async generateDataset(params: {
@@ -154,6 +204,7 @@ export const API = {
     sheet?: string;
     header_row?: number;
     overrides?: Record<string, string | null>;
+    profile_name?: string;
   }) {
     const res = await fetch('/api/mapping/confirm', {
       method: 'POST',
@@ -161,6 +212,11 @@ export const API = {
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error((await res.json()).detail || 'Confirm failed');
+    return res.json();
+  },
+
+  async listMappingProfiles() {
+    const res = await fetch('/api/mapping/profiles');
     return res.json();
   },
 

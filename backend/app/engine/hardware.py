@@ -54,15 +54,20 @@ def normalise_subtype(raw: Optional[str]) -> Optional[str]:
     return SUBTYPE_SYNONYMS.get(key)
 
 
-def hardware_for(io_type: Optional[str], subtype: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """First matching row wins. (None, None) means no rule matches -> hardware TQ."""
+def hardware_for(io_type: Optional[str], subtype: Optional[str],
+                 table: Optional[list] = None) -> Tuple[Optional[str], Optional[str]]:
+    """First matching row wins. (None, None) means no rule matches -> hardware TQ.
+
+    `table` may be supplied from the rule set (P3, data-driven); it is a list
+    of dicts with keys io_type/subtype/charm/tb. Falls back to HW_TABLE.
+    """
     if not io_type:
         return None, None
     iot = str(io_type).strip().upper()
     sub = normalise_subtype(subtype)
     if sub is None:
         return None, None
-    for row in HW_TABLE:
+    for row in (HW_TABLE if table is None else table):
         if row["io_type"] == iot and row["subtype"] in ("*", sub):
             return row["charm"], row["tb"]
     return None, None

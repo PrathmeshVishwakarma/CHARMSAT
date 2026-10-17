@@ -85,19 +85,55 @@ def check(io_rows, alloc_rows, rules, hw_table, cable_sizes, tq_tags=frozenset()
         return io_tag[r["tag"]].get(name, "") if r["tag"] in io_tag else ""
 
     # 3. never-share rules
+    _LEVEL_KEY = {"cabinet": lambda r: (r["cabinet"],),
+                  "cioc": lambda r: (r["cabinet"], r["cioc"]),
+                  "baseplate": lambda r: (r["cabinet"], r["cioc"], r["baseplate"])}
     for rule in rules["segregation"]:
         if not rule["enabled"]:
             continue
-        key = {"cabinet": lambda r: (r["cabinet"],), "cioc": lambda r: (r["cabinet"], r["cioc"]),
-               "baseplate": lambda r: (r["cabinet"], r["cioc"], r["baseplate"])}[rule["level"]]
+        key = _LEVEL_KEY[rule["level"]]
         classes = defaultdict(set)
+        rule_classes = rule.get("classes")  # None/[] = ALL_DISTINCT
         for r in alloc_rows:
             val = attr(r, rule["attribute"])
-            if val in rule["classes"]:
+            if not val:
+                continue
+            if rule_classes is None or not rule_classes or val in rule_classes:
                 classes[key(r)].add(val)
         for unit, vals in classes.items():
             if len(vals) > 1:
                 bad(rule["id"], f"{rule['level']} {unit} mixes {sorted(vals)}")
+
+    # 3b. cohesion rules: same attribute value stays in the same unit
+    for rule in rules.get("cohesion", []):
+        if not rule.get("enabled", True):
+            continue
+        key = _LEVEL_KEY[rule["level"]]
+        units_of = defaultdict(set)
+        for r in alloc_rows:
+            val = attr(r, rule["attribute"])
+            if val:
+                units_of[val].add(key(r))
+        for val, units in units_of.items():
+            if len(units) > 1:
+                bad(rule["id"], f"{rule['attribute']} '{val}' is split across "
+                                f"{rule['level']}s {sorted(units)} (rule {rule['id']})")
+
+    # 3c. capacity rules (at_most_k): <= k distinct attribute values per unit
+    for rule in rules.get("capacity", []):
+        if not rule.get("enabled", True):
+            continue
+        key = _LEVEL_KEY[rule["level"]]
+        values_of = defaultdict(set)
+        for r in alloc_rows:
+            val = attr(r, rule["attribute"])
+            if val:
+                values_of[key(r)].add(val)
+        for unit, vals in values_of.items():
+            if len(vals) > rule["k"]:
+                bad(rule["id"], f"{rule['level']} {unit} has {len(vals)} distinct "
+                                f"{rule['attribute']} values {sorted(vals)}; rule {rule['id']} "
+                                f"allows at most {rule['k']}")
 
     # 4. group cohesion
     if rules["group_cohesion"]["enabled"]:

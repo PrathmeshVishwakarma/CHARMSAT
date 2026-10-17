@@ -49,6 +49,71 @@ def _move_kind(a, b) -> str:
     return "slot"
 
 
+def _same_unit(level: str, row: dict, pos: tuple) -> bool:
+    if level == "cabinet":
+        return row["cabinet"] == pos[0]
+    if level == "cioc":
+        return (row["cabinet"], row["cioc"]) == (pos[0], pos[1])
+    return (row["cabinet"], row["cioc"], row["baseplate"]) == (pos[0], pos[1], pos[2])
+
+
+def attribute_forcing_rule(tag, pos_a, pos_b, io_a, io_b, rows_a, rows_b, rules) -> tuple:
+    """Which rule blocks this signal's Rev A slot under Rev B data (P4-2).
+
+    Deterministic, and honest: when no rule conflict is demonstrable at the old
+    slot the move is reported as an optimiser rebalance, never guessed.
+    Returns (rule_id, reason).
+    """
+    ta, tb = io_a.get(tag), io_b.get(tag)
+    if not ta or not tb:
+        return "", "optimiser rebalance: signal added or removed"
+    if (ta.cable, ta.pair) != (tb.cable, tb.pair):
+        return "RULE-02", f"cable/pair changed for {tag} in Rev B"
+    if (ta.io_type, ta.subtype or "") != (tb.io_type, tb.subtype or ""):
+        return "RULE-06", f"IO type/subtype changed for {tag} in Rev B"
+    pairs_a = {s.pair for s in io_a.values() if s.cable == ta.cable}
+    pairs_b = {s.pair for s in io_b.values() if s.cable == tb.cable}
+    if pairs_a != pairs_b:
+        return "RULE-02", (f"cable {tb.cable} block changed ({len(pairs_a)}→{len(pairs_b)} pairs); "
+                           f"the whole block shifted to stay contiguous")
+    ref = rules_to_ref(rules)
+    for r in ref["segregation"]:
+        if not r["enabled"]:
+            continue
+        attr, classes = r["attribute"], r.get("classes")
+        tval = getattr(tb, attr) or ""
+        if classes and tval not in classes:
+            continue
+        for row in rows_b:
+            if not row["tag"] or row["tag"] == tag or not _same_unit(r["level"], row, pos_a):
+                continue
+            mval = getattr(io_b[row["tag"]], attr) or ""
+            if classes and mval not in classes:
+                continue
+            if tval and mval and mval != tval:
+                return r["id"], (f"the {r['level']} holding the old slot now mixes {mval} with {tval} "
+                                 f"in Rev B (rule {r['id']})")
+    if rules.group_cohesion.enabled and pos_a[0] != pos_b[0] and ta.group:
+        cabs = {row["cabinet"] for row in rows_b if row["tag"] and io_b[row["tag"]].group == ta.group}
+        if len(cabs) > 1:
+            return "RULE-03", f"group {ta.group} now spans cabinets {sorted(cabs)} in Rev B"
+    occupant = next((row for row in rows_b
+                     if row.get("tag") and row["tag"] != tag
+                     and (row["cabinet"], row["cioc"], row["baseplate"], row["slot"]) == pos_a), None)
+    if occupant is not None:
+        oc = io_b[occupant["tag"]]
+        if oc.cable != tb.cable:
+            return "RULE-02", (f"old slot now sits inside cable {oc.cable}'s contiguous block "
+                               f"(blocks repacked to keep every cable whole)")
+        return "RULE-02", (f"cable {tb.cable} block reordered in Rev B; the old slot carries "
+                           f"pair {oc.pair} of the same cable")
+    cabs_a = len({row["cabinet"] for row in rows_a if row["tag"]})
+    cabs_b = len({row["cabinet"] for row in rows_b if row["tag"]})
+    if cabs_b > cabs_a and pos_a[0] != pos_b[0]:
+        return "RULE-04", f"Rev B needs {cabs_b} cabinets vs {cabs_a} in Rev A (spare/capacity repacked)"
+    return "", "optimiser rebalance: no rule blocks the Rev A slot under Rev B data"
+
+
 def solve_revision(signals_b, sizes_b: Dict[str, int], rules: RuleSetConfig,
                    prev: PrevMap, signals_a, rows_a: List[dict],
                    core_a) -> Tuple[AllocResult, PrevMap, dict]:
@@ -84,17 +149,21 @@ def solve_revision(signals_b, sizes_b: Dict[str, int], rules: RuleSetConfig,
     details: List[RevisionMoveDetail] = []
     moved_tags = [t for t in common - changed
                   if t in pos_a and t in pos_b and pos_a[t] != pos_b[t]]
+    io_a = {s.tag: s for s in core_a}
+    io_b = {s.tag: s for s in core_b}
     for t in sorted(moved_tags):
         a, b = pos_a[t], pos_b[t]
         kind = _move_kind(a, b)
         r = new_by_tag[t]
+        rule_id, reason = attribute_forcing_rule(
+            t, a, b, io_a, io_b, rows_a, res_b["rows"], rules)
         details.append(RevisionMoveDetail(
             tag=t, cable=r["cable"], io_type=r.get("io_type") or "",
             group=r.get("group") or None,
             old_location=f"CAB-{a[0]:02d} / CIOC-{a[1]} / BP-{a[2]} / S-{a[3]}",
             new_location=f"CAB-{b[0]:02d} / CIOC-{b[1]} / BP-{b[2]} / S-{b[3]}",
-            forcing_rule="",
-            reason=f"{kind} changed; forcing-rule attribution planned (P4-2)",
+            forcing_rule=rule_id,
+            reason=reason,
         ))
 
     out = build_alloc_result(res_b, rules, row_lookup_b)

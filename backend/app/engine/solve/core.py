@@ -53,6 +53,7 @@ class Cable:
     signals: List[Signal] = field(default_factory=list)
     group: str = ""
     color: Dict[str, str] = field(default_factory=dict)   # rule_id -> class value ("" = neutral)
+    cohesion: Dict[str, str] = field(default_factory=dict)  # cohesion rule_id -> shared value
 
     @property
     def used(self) -> int:
@@ -68,12 +69,15 @@ class Placement:
 
 DEFAULT_RULES = {
     "hardware": {"cabinet_ciocs": 4, "cioc_baseplates": 8, "baseplate_slots": 12},
+    "hardware_table": None,
     "spare": {"percent": 10.0, "unit": "baseplate", "rounding": "ceil"},
     "group_cohesion": {"enabled": True, "level": "cabinet", "on_oversize": "split_with_tq"},
     "segregation": [
         # generic never_share rules: cables of different classes never share the unit at `level`
         {"id": "R2-AB", "attribute": "seg", "classes": ["A", "B"], "level": "cioc", "enabled": True},
     ],
+    "cohesion": [],   # generic "same" rules: {id, attribute, level}
+    "capacity": [],   # generic "at_most_k" rules: {id, attribute, level, k}
     "cable": {"small_may_straddle": False, "spare_pairs_occupy_slots": True},
     "solver": {"det_time_stage1": 3.0, "det_time_balance": 2.0, "det_time_stage2": 1.0, "workers": 8, "seed": 7,
                "max_benders_iters": 8, "cabinet_cost_in_moves": 200, "design_for_change": True},
@@ -100,6 +104,7 @@ def spare_baseplates(rules) -> int:
 
 def build_cables(signals: List[Signal], sizes: Dict[str, int], rules) -> Tuple[List[Cable], List[dict]]:
     """Cable blocks + data TQs. Every signal ends up either in a cable block or in a TQ."""
+    hw_table = rules.get("hardware_table")
     tqs, by_cable = [], defaultdict(list)
     seen_tag = {}
     for s in signals:
@@ -125,7 +130,7 @@ def build_cables(signals: List[Signal], sizes: Dict[str, int], rules) -> Tuple[L
             continue
         c = Cable(cid, size, sigs, group=sigs[0].group)
         for sg in sigs:
-            if _hw(sg) == (None, None):
+            if _hw(sg, hw_table) == (None, None):
                 tqs.append({"id": f"TQ-HW-{sg.tag}", "kind": "data", "items": [sg.tag],
                             "message": f"No CHARM/terminal-block rule matches {sg.tag} ({sg.io_type}/{sg.subtype or '-'}). "
                                        f"Position reserved on {cid} pair {sg.pair}; add a hardware rule or correct the type."})
@@ -137,22 +142,37 @@ def build_cables(signals: List[Signal], sizes: Dict[str, int], rules) -> Tuple[L
                                    f"split, so it follows group {c.group}; {len(minority)} signal(s) of the other group(s) "
                                    f"may sit in a different cabinet from their group. Please confirm."})
         bad = False
+        # never-share (segregation): classes may be enumerated, or None = ALL_DISTINCT
         for r in rules["segregation"]:
             if not r["enabled"]:
                 continue
-            vals = {getattr(s, r["attribute"]) for s in sigs} & set(r["classes"])
+            raw = {getattr(s, r["attribute"]) for s in sigs if getattr(s, r["attribute"])}
+            vals = raw & set(r["classes"]) if r.get("classes") else raw
             if len(vals) > 1:
                 tqs.append({"id": f"TQ-CONFLICT-{cid}", "kind": "rule_conflict", "items": [s.tag for s in sigs],
-                            "rules": [r["id"], "R4-CABLE-BLOCK"],
+                            "rules": [r["id"], "R4-CABLE-BLOCK"], "mus": [r["id"], "R4-CABLE-BLOCK"],
                             "message": f"Cable {cid} mixes {sorted(vals)} on '{r['attribute']}': rule {r['id']} "
                                        f"(never share a {r['level']}) and the keep-cable-together rule cannot both hold. "
+                                       f"Minimal conflict: {r['id']} needs these values apart; R4-CABLE-BLOCK keeps this "
+                                       f"cable atomic. Fix: split the cable or correct the {r['attribute']} column."})
+                bad = True
+            c.color[r["id"]] = next(iter(vals)) if len(vals) == 1 else ""
+        # cohesion (same): a cable must carry one value of the attribute; mixed -> cannot split
+        for r in rules.get("cohesion", []):
+            if not r.get("enabled", True):
+                continue
+            raw = {getattr(s, r["attribute"]) for s in sigs if getattr(s, r["attribute"])}
+            c.cohesion[r["id"]] = next(iter(raw)) if len(raw) == 1 else ""
+            if len(raw) > 1:
+                tqs.append({"id": f"TQ-COH-{cid}", "kind": "rule_conflict", "items": [s.tag for s in sigs],
+                            "rules": [r["id"], "R4-CABLE-BLOCK"], "mus": [r["id"], "R4-CABLE-BLOCK"],
+                            "message": f"Cable {cid} mixes {sorted(raw)} on '{r['attribute']}': rule {r['id']} "
+                                       f"(same {r['level']}) and the keep-cable-together rule cannot both hold. "
                                        f"Fix: split the cable or correct the {r['attribute']} column."})
                 bad = True
-            c.color[r["id"]] = vals.pop() if len(vals) == 1 else ""
         if not bad:
             cables.append(c)
     return cables, tqs
-
 
 def bp_need(slots: int) -> int:
     return -(-slots // SLOTS_PER_BP)
@@ -188,10 +208,26 @@ class Unit:
     id: str
     cables: List[Cable]
     load: Dict[Tuple[str, str], int]      # (rule_id, class) -> slots ; ("", "") = total
+    values: Dict[Tuple[str, str], int] = field(default_factory=dict)  # (cap_rule_id, value) -> slots
 
     @property
     def total(self) -> int:
         return self.load[("", "")]
+
+
+def _unit_values(units: List["Unit"], rule_id: str) -> set:
+    """Distinct values of a capacity attribute present across these units."""
+    return {v for u in units for (rid, v) in u.values if rid == rule_id and v}
+
+
+def _cap_violation(units: List["Unit"], rules) -> bool:
+    """True when the units together exceed any cabinet-level at_most_k rule."""
+    for r in rules.get("capacity", []):
+        if r.get("level") != "cabinet" or not r.get("enabled", True):
+            continue
+        if len(_unit_values(units, r["id"])) > r["k"]:
+            return True
+    return False
 
 
 def why_not_fit(us: List["Unit"], rules) -> List[str]:
@@ -204,29 +240,53 @@ def why_not_fit(us: List["Unit"], rules) -> List[str]:
     for r in rules["segregation"]:
         if not r["enabled"]:
             continue
-        loads = {k: sum(u.load.get((r["id"], k), 0) for u in us) for k in r["classes"]}
+        loads = {k: sum(u.load.get((r["id"], k), 0) for u in us) for k in (r.get("classes") or [])}
         present = [k for k, v in loads.items() if v]
         if r["level"] == "cabinet" and len(present) > 1:
             reasons.append(f"contains {' and '.join(present)} signals, which rule {r['id']} keeps in different cabinets")
         if r["level"] == "cioc" and sum(-(-v // SLOTS_PER_CIOC) for v in loads.values()) > CIOC_PER_CAB:
             reasons.append(f"needs more than {CIOC_PER_CAB} CIOCs once {' / '.join(present)} are separated (rule {r['id']})")
+    for r in rules.get("capacity", []):
+        if r.get("level") == "cabinet" and r.get("enabled", True):
+            vals = _unit_values(us, r["id"])
+            if len(vals) > r["k"]:
+                reasons.append(f"carries {len(vals)} distinct {r['attribute']} values but rule {r['id']} allows "
+                               f"at most {r['k']} per cabinet")
     return reasons or ["per-CIOC packing could not be completed"]
 
 
 def make_units(cables: List[Cable], rules, tqs: List[dict]) -> List[Unit]:
+    cohesion_rules = [r for r in rules.get("cohesion", []) if r.get("enabled", True)]
+    capacity_rules = [r for r in rules.get("capacity", []) if r.get("enabled", True)]
+
+    def cohesion_label(c: Cable) -> str:
+        parts = []
+        if rules["group_cohesion"]["enabled"] and c.group:
+            parts.append(f"group={c.group}")
+        for r in cohesion_rules:
+            v = c.cohesion.get(r["id"], "")
+            if v:
+                parts.append(f"{r['id']}={v}")
+        return "|".join(parts)
+
     by_group = defaultdict(list)
     for c in cables:
-        key = c.group if (rules["group_cohesion"]["enabled"] and c.group) else f"__free__{c.id}"
-        by_group[key].append(c)
+        label = cohesion_label(c)
+        by_group[label or f"__free__{c.id}"].append(c)
 
     def unit_of(uid, cs):
         load = defaultdict(int)
+        values = defaultdict(int)
         for c in cs:
             load[("", "")] += c.size
             for r in rules["segregation"]:
                 if r["enabled"]:
                     load[(r["id"], c.color.get(r["id"], ""))] += c.size
-        return Unit(uid, cs, dict(load))
+            for r in capacity_rules:
+                for s in c.signals:
+                    if getattr(s, r["attribute"], ""):
+                        values[(r["id"], getattr(s, r["attribute"]))] += 1
+        return Unit(uid, cs, dict(load), dict(values))
 
     units = []
     for key in sorted(by_group):
@@ -297,10 +357,14 @@ def cabinet_relaxation_ok(us: List[Unit], rules, conservative: bool = True) -> b
     total = sum(u.total for u in us)
     if bp_need(total) > usable_bp:
         return False
+    if _cap_violation(us, rules):
+        return False
     for r in rules["segregation"]:
         if not r["enabled"]:
             continue
-        loads = {k: sum(u.load.get((r["id"], k), 0) for u in us) for k in r["classes"]}
+        classes = r.get("classes")
+        keys = classes if classes else sorted({k for u in us for (rid, k) in u.load if rid == r["id"]})
+        loads = {k: sum(u.load.get((r["id"], k), 0) for u in us) for k in keys}
         if r["level"] == "cabinet" and sum(1 for v in loads.values() if v) > 1:
             return False
         if r["level"] == "cioc" and sum(-(-v // SLOTS_PER_CIOC) for v in loads.values()) > CIOC_PER_CAB:
@@ -367,7 +431,9 @@ def stage1(units: List[Unit], rules, prev_cab: Optional[Dict[str, int]] = None,
                 continue
             class_bp = []
             nc = []
-            for k in r["classes"]:
+            # classes may be None = ALL_DISTINCT: gather every value seen across units
+            r_classes = r.get("classes") or sorted({k for u in units for (rid, k) in u.load if rid == r["id"]})
+            for k in r_classes:
                 ld = sum(units[i].load.get((r["id"], k), 0) * x[i, j] for i in range(len(units)))
                 if r["level"] == "cabinet":
                     h = m.NewBoolVar("")
@@ -395,6 +461,19 @@ def stage1(units: List[Unit], rules, prev_cab: Optional[Dict[str, int]] = None,
                 class_bp.append(bn)
             if class_bp:                       # per rule: its classes need disjoint baseplates
                 m.Add(bp >= sum(class_bp))
+        # cabinet-level at_most_k: <= k distinct attribute values per used cabinet
+        for r in rules.get("capacity", []):
+            if not r.get("enabled", True) or r.get("level") != "cabinet":
+                continue
+            vals = sorted(_unit_values(units, r["id"]))
+            present = []
+            for v in vals:
+                y = m.NewBoolVar("")
+                for i in range(len(units)):
+                    if units[i].values.get((r["id"], v), 0):
+                        m.AddImplication(x[i, j], y)
+                present.append(y)
+            m.Add(sum(present) <= r["k"])
     for cut in cuts or []:
         for j in range(M):
             m.Add(sum(x[i, j] for i in cut) <= len(cut) - 1)
@@ -456,6 +535,12 @@ def stage2(cables: List[Cable], rules, prev_cioc: Optional[Dict[str, int]] = Non
     z = {(c.id, k): m.NewBoolVar("") for c in cables for k in K}
     for c in cables:
         m.AddExactlyOne(z[c.id, k] for k in K)
+
+    def cable_values(c: Cable, rule) -> set:
+        return {getattr(s, rule["attribute"]) for s in c.signals if getattr(s, rule["attribute"])}
+
+    capacity_rules = [r for r in rules.get("capacity", []) if r.get("enabled", True)]
+    cohesion_rules = [r for r in rules.get("cohesion", []) if r.get("enabled", True)]
     bps = []
     for k in K:
         load = sum(c.size * z[c.id, k] for c in cables)
@@ -466,21 +551,49 @@ def stage2(cables: List[Cable], rules, prev_cioc: Optional[Dict[str, int]] = Non
             cls_bp = []
             if not r["enabled"] or r["level"] == "cabinet":
                 continue
+            classes = r.get("classes") or sorted({c.color.get(r["id"], "") for c in cables} - {""})
             if r["level"] == "cioc":
-                has = {cl: m.NewBoolVar("") for cl in r["classes"]}
+                has = {cl: m.NewBoolVar("") for cl in classes}
                 for c in cables:
                     cl = c.color.get(r["id"], "")
                     if cl:
                         m.AddImplication(z[c.id, k], has[cl])
                 m.Add(sum(has.values()) <= 1)
             else:  # baseplate-level: classes need their own baseplates inside the CIOC
-                for cl in r["classes"]:
+                for cl in classes:
                     ld = sum(c.size * z[c.id, k] for c in cables if c.color.get(r["id"], "") == cl)
                     b = m.NewIntVar(0, BP_PER_CIOC, "")
                     m.Add(SLOTS_PER_BP * b >= ld)
                     cls_bp.append(b)
             if cls_bp:
                 m.Add(bp >= sum(cls_bp))
+        # cioc-level cohesion: every cable with a value sits in the same CIOC
+        for r in cohesion_rules:
+            if r["level"] != "cioc":
+                continue
+            vals = sorted({c.cohesion.get(r["id"], "") for c in cables if c.cohesion.get(r["id"], "")})
+            for v in vals:
+                has = []
+                for kk in K:
+                    h = m.NewBoolVar("")
+                    for c in cables:
+                        if c.cohesion.get(r["id"], "") == v:
+                            m.AddImplication(z[c.id, kk], h)
+                    has.append(h)
+                m.Add(sum(has) <= 1)
+        # cioc-level at_most_k on the values present in this CIOC
+        for r in capacity_rules:
+            if r["level"] != "cioc":
+                continue
+            vals = sorted({v for c in cables for v in cable_values(c, r)})
+            present = []
+            for v in vals:
+                h = m.NewBoolVar("")
+                for c in cables:
+                    if v in cable_values(c, r):
+                        m.AddImplication(z[c.id, k], h)
+                present.append(h)
+            m.Add(sum(present) <= r["k"])
         bps.append(bp)
     m.Add(sum(bps) <= usable_bp)
     if prev_cioc:
@@ -510,7 +623,10 @@ def stage3(cables: List[Cable], rules, prev_start: Optional[Dict[str, int]] = No
            bp_budget: int = BP_PER_CIOC) -> Optional[Dict[str, int]]:
     divisible = all(c.size in (2, 6, 12, 24) for c in cables)
     bp_rules = [r for r in rules["segregation"] if r["enabled"] and r["level"] == "baseplate"]
-    if divisible and not prev_start:
+    baseplate_generic = any(
+        x.get("enabled", True) and x.get("level") == "baseplate"
+        for x in list(rules.get("cohesion", [])) + list(rules.get("capacity", [])))
+    if divisible and not prev_start and not baseplate_generic:
         return _stage3_ffd(cables, bp_rules)
     return _stage3_cpsat(cables, rules, bp_rules, prev_start or {}, bp_budget)
 
@@ -576,6 +692,25 @@ def _stage3_cpsat(cables, rules, bp_rules, prev_start, bp_budget=BP_PER_CIOC) ->
             keep.append(c.used * k)
     m.AddNoOverlap(iv)
     m.Add(sum(bp_used) <= bp_budget)
+
+    touch: Dict[Tuple[str, int], "cp_model.IntVar"] = {}
+
+    def _touches(c, b):
+        """Boolean: cable c overlaps baseplate b (created once, shared)."""
+        key = (c.id, b)
+        if key in touch:
+            return touch[key]
+        on = m.NewBoolVar("")
+        m.Add(st[c.id] < (b + 1) * SLOTS_PER_BP).OnlyEnforceIf(on)
+        m.Add(st[c.id] + c.size > b * SLOTS_PER_BP).OnlyEnforceIf(on)
+        lo = m.NewBoolVar("")
+        hi = m.NewBoolVar("")
+        m.Add(st[c.id] >= (b + 1) * SLOTS_PER_BP).OnlyEnforceIf(lo)
+        m.Add(st[c.id] + c.size <= b * SLOTS_PER_BP).OnlyEnforceIf(hi)
+        m.AddBoolOr([on, lo, hi])
+        touch[key] = on
+        return on
+
     for r in bp_rules:  # never-share at baseplate level
         cls = sorted({c.color.get(r["id"], "") for c in cables} - {""})
         if len(cls) < 2:
@@ -586,16 +721,33 @@ def _stage3_cpsat(cables, rules, bp_rules, prev_start, bp_budget=BP_PER_CIOC) ->
                 cl = c.color.get(r["id"], "")
                 if not cl:
                     continue
-                on = m.NewBoolVar("")  # cable c touches baseplate b
-                m.Add(st[c.id] < (b + 1) * SLOTS_PER_BP).OnlyEnforceIf(on)
-                m.Add(st[c.id] + c.size > b * SLOTS_PER_BP).OnlyEnforceIf(on)
-                lo = m.NewBoolVar("")
-                hi = m.NewBoolVar("")
-                m.Add(st[c.id] >= (b + 1) * SLOTS_PER_BP).OnlyEnforceIf(lo)
-                m.Add(st[c.id] + c.size <= b * SLOTS_PER_BP).OnlyEnforceIf(hi)
-                m.AddBoolOr([on, lo, hi])
-                m.AddImplication(on, hb[cl])
+                m.AddImplication(_touches(c, b), hb[cl])
             m.Add(sum(hb.values()) <= 1)
+    # baseplate-level cohesion: all cables of a value touch the same baseplate
+    for r in [x for x in rules.get("cohesion", []) if x.get("enabled", True) and x["level"] == "baseplate"]:
+        vals = sorted({c.cohesion.get(r["id"], "") for c in cables if c.cohesion.get(r["id"], "")})
+        for v in vals:
+            has = []
+            for b in range(BP_PER_CIOC):
+                h = m.NewBoolVar("")
+                for c in cables:
+                    if c.cohesion.get(r["id"], "") == v:
+                        m.AddImplication(_touches(c, b), h)
+                has.append(h)
+            m.Add(sum(has) <= 1)
+    # baseplate-level at_most_k: <= k distinct values on each baseplate
+    for r in [x for x in rules.get("capacity", []) if x.get("enabled", True) and x["level"] == "baseplate"]:
+        vals = sorted({getattr(sg, r["attribute"]) for c in cables for sg in c.signals
+                       if getattr(sg, r["attribute"])})
+        for b in range(BP_PER_CIOC):
+            present = []
+            for v in vals:
+                h = m.NewBoolVar("")
+                for c in cables:
+                    if any(getattr(sg, r["attribute"]) == v for sg in c.signals):
+                        m.AddImplication(_touches(c, b), h)
+                present.append(h)
+            m.Add(sum(present) <= r["k"])
     if keep:
         m.Maximize(sum(keep))
     s = solver_params(rules, 2.0)
@@ -678,7 +830,7 @@ def allocate(signals: List[Signal], sizes: Dict[str, int], rules=DEFAULT_RULES,
         cuts.append(failed)
     else:
         return {"ok": False, "tqs": tqs + [{"id": "TQ-SOLVER", "kind": "capacity", "message": "Benders loop did not converge"}]}
-    rows = rows_from(cables, placements)
+    rows = rows_from(cables, placements, rules.get("hardware_table"))
     n_cab = len({p.cabinet for p in placements.values()})
     return {"ok": True, "rows": rows, "placements": placements, "tqs": tqs, "cabinets": n_cab,
             "lower_bounds": lbs, "stage1": s1_info, "benders_cuts": len(cuts),
@@ -691,11 +843,11 @@ def allocate(signals: List[Signal], sizes: Dict[str, int], rules=DEFAULT_RULES,
 from app.engine.hardware import hardware_for as _hw_for
 
 
-def _hw(s) -> Tuple[Optional[str], Optional[str]]:
-    return _hw_for(s.io_type, s.subtype)
+def _hw(s, table=None) -> Tuple[Optional[str], Optional[str]]:
+    return _hw_for(s.io_type, s.subtype, table)
 
 
-def rows_from(cables: List[Cable], placements: Dict[str, Placement]) -> List[dict]:
+def rows_from(cables: List[Cable], placements: Dict[str, Placement], hw_table=None) -> List[dict]:
     rows = []
     for c in cables:
         p = placements[c.id]
@@ -706,7 +858,7 @@ def rows_from(cables: List[Cable], placements: Dict[str, Placement]) -> List[dic
             if s is None:
                 charm, tb = "(spare position)", ""
             else:
-                hw_c, hw_t = _hw(s)
+                hw_c, hw_t = _hw(s, hw_table)
                 charm, tb = (hw_c, hw_t) if hw_c else ("TBD - see TQ", "TBD - see TQ")
             rows.append({"tag": s.tag if s else "", "cable": c.id, "pair": pair,
                          "cabinet": p.cabinet + 1, "cioc": p.cioc + 1, "baseplate": slot // 12 + 1,

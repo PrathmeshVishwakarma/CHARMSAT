@@ -71,6 +71,7 @@ class TQ(BaseModel):
     tags: List[str] = Field(default_factory=list)  # affected tags (all, never truncated)
     rows: List[int] = Field(default_factory=list)  # Excel row numbers (1-based)
     options: List[str] = Field(default_factory=list)  # engineer fix options
+    mus: List[str] = Field(default_factory=list)  # minimal conflicting rule subset (P4-1)
 
 class RevisionMoveDetail(BaseModel):
     tag: str

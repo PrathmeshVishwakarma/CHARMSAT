@@ -212,7 +212,15 @@ export const ScreenRevisionDiff: React.FC<RevisionDiffProps> = ({
                     <td className="py-2 px-2.5 text-[#4ADE80]">{m.io_type}</td>
                     <td className="py-2 px-2.5 text-[#6B8E78]">{m.old_location}</td>
                     <td className="py-2 px-2.5 text-amber-300 font-bold">{m.new_location}</td>
-                    <td className="py-2 px-2.5 text-[#A7C7B3]">{m.forcing_rule}</td>
+                    <td className="py-2 px-2.5">
+                      {m.forcing_rule ? (
+                        <span className="px-1.5 py-0.5 rounded bg-[#102B19] text-[#5CFF7A] border border-[#1E4D2C]">
+                          {m.forcing_rule}
+                        </span>
+                      ) : (
+                        <span className="text-[#6B8E78]">rebalance</span>
+                      )}
+                    </td>
                     <td className="py-2 px-2.5 text-[#C4D9CC]">{m.reason}</td>
                   </tr>
                 ))}

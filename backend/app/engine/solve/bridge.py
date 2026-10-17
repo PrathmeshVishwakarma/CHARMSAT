@@ -1,9 +1,15 @@
 """Bridge between the app (RuleSetConfig, repo Signals, AllocResult) and the
 ported three-stage core (plain rules dicts, core Signals, row dicts).
 
-Until the YAML rule language lands (P3), the compiled rule structure is
-built from the existing RuleSetConfig. Every user-visible rule parameter
-flows through; nothing is hard-coded.
+The compiler here is the only place rule *kinds* are turned into the plain
+structures the solver and the independent checker consume. Every generic rule
+(custom_rules) flows through:
+
+  relation "different" -> never-share (segregation) entry
+  relation "same"      -> cohesion entry (attribute stays together per level)
+  relation "at_most_k" -> capacity entry (<= k distinct values per level)
+
+Adding another rule of an existing kind is a YAML edit; no code change.
 """
 from typing import Dict, List, Optional, Tuple
 
@@ -12,20 +18,53 @@ from app.models.rules import RuleSetConfig
 from app.engine.naming import NameGenerator
 from app.engine.solve import core
 
+# Attribute -> the classes a "different" rule separates when none are given.
+# seg has a fixed vocabulary; every other attribute is ALL_DISTINCT (None).
+_DEFAULT_CLASSES = {"seg": ["A", "B"]}
+
 
 def rules_to_ref(rules: RuleSetConfig) -> dict:
     """RuleSetConfig -> reference-style rules dict consumed by core stages."""
+    segregation: List[dict] = []
+    if rules.ab_segregation.enabled:
+        segregation.append({
+            "id": rules.ab_segregation.id, "attribute": "seg", "classes": ["A", "B"],
+            "level": rules.ab_segregation.level, "enabled": True,
+        })
+    cohesion: List[dict] = []
+    capacity: List[dict] = []
+    for r in rules.custom_rules:
+        if not r.enabled:
+            continue
+        if r.relation == "different":
+            classes = r.classes if r.classes else _DEFAULT_CLASSES.get(r.attribute)
+            segregation.append({
+                "id": r.id, "attribute": r.attribute, "classes": classes,
+                "level": r.level, "enabled": True,
+            })
+        elif r.relation == "same":
+            cohesion.append({
+                "id": r.id, "attribute": r.attribute, "level": r.level,
+                "enabled": True,
+            })
+        else:  # at_most_k
+            capacity.append({
+                "id": r.id, "attribute": r.attribute, "level": r.level,
+                "k": max(1, r.k_value), "enabled": True,
+            })
+
+    hardware_table = [h.model_dump() for h in rules.hardware_table] if rules.hardware_table else None
     return {
         "hardware": {"cabinet_ciocs": 4, "cioc_baseplates": 8, "baseplate_slots": 12},
+        "hardware_table": hardware_table,
         "spare": {"percent": rules.spare_capacity.spare_percentage if rules.spare_capacity.enabled else 0.0,
                   "unit": "baseplate", "rounding": "ceil"},
         "group_cohesion": {"enabled": rules.group_cohesion.enabled,
                            "level": rules.group_cohesion.target_level,
                            "on_oversize": "split_with_tq"},
-        "segregation": [
-            {"id": rules.ab_segregation.id, "attribute": "seg", "classes": ["A", "B"],
-             "level": rules.ab_segregation.level, "enabled": rules.ab_segregation.enabled},
-        ],
+        "segregation": segregation,
+        "cohesion": cohesion,
+        "capacity": capacity,
         "cable": {"small_may_straddle": rules.cable_contiguity.allow_boundary_crossing_small,
                   "spare_pairs_occupy_slots": True},
         "solver": {"det_time_stage1": 3.0, "det_time_balance": 2.0, "det_time_stage2": 1.0,
@@ -47,11 +86,13 @@ def to_core_signals(signals) -> List["core.Signal"]:
 def tq_from_core(d: dict, row_lookup: Dict[str, int]) -> TQ:
     tags = list(d.get("items", []))
     rows = sorted({row_lookup[t] for t in tags if t in row_lookup})
+    rules = list(d.get("rules", []))
     return TQ(id=d.get("id", "TQ-?"), kind=d.get("kind", "data"),
               items=tags, tags=tags, rows=rows,
-              rule_ids=list(d.get("rules", [])),
+              rule_ids=rules,
               message=d.get("message", ""),
-              options=list(d.get("options", [])))
+              options=list(d.get("options", [])),
+              mus=list(d.get("mus", rules)))
 
 
 def alloc_row_to_slot(row: dict, names: NameGenerator) -> AllocatedSlot:

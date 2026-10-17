@@ -7,7 +7,7 @@ synonym tables; text that matches nothing becomes a hardware TQ (the
 position is still reserved, per reference/build_cables).
 """
 from collections import defaultdict
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from app.models.domain import Signal, TQ
 from app.engine.mapper import normalise_io_type
 from app.engine.hardware import normalise_subtype, HW_TABLE
@@ -16,11 +16,12 @@ GIANT_CABLE_PAIRS = 96  # a cable bigger than one CIOC cannot be placed
 
 
 def _tq(tq_id: str, kind: str, tags: List[str], rows: List[int],
-        rules: List[str], message: str, options: List[str] = []) -> TQ:
+        rules: List[str], message: str, options: List[str] = [],
+        mus: Optional[List[str]] = None) -> TQ:
     items = sorted(set(tags))
     return TQ(id=tq_id, kind=kind, items=items, tags=items,
               rows=sorted(set(rows)), rule_ids=rules, message=message,
-              options=list(options))
+              options=list(options), mus=list(mus if mus is not None else rules))
 
 
 class DataValidator:
@@ -167,8 +168,11 @@ class DataValidator:
                 tqs.append(_tq(tq_id, "rule_conflict", [s.tag for s in sigs],
                                [s.row_no for s in sigs], ["R2-AB", "R4-CABLE-BLOCK"],
                                f"Cable {cid} mixes {sorted(segs)}: never-share (R2-AB) and "
-                               f"keep-cable-together cannot both hold. Cable held.",
-                               ["Split the cable, or correct the segregation column."]))
+                               f"keep-cable-together (R4-CABLE-BLOCK) cannot both hold. "
+                               f"Minimal conflict: R2-AB needs A and B in different units; "
+                               f"R4-CABLE-BLOCK keeps this cable atomic. Cable held.",
+                               ["Split the cable, or correct the segregation column."],
+                               mus=["R2-AB", "R4-CABLE-BLOCK"]))
 
         # 8. Giant cable (> 1 CIOC): cannot be placed -> hold.
         for cid in sorted(by_cable):
@@ -179,10 +183,12 @@ class DataValidator:
                 for s in sigs:
                     hold(s.tag, s.row_no, tq_id)
                 tqs.append(_tq(tq_id, "capacity", [s.tag for s in sigs],
-                               [s.row_no for s in sigs], ["R3-CAPACITY"],
+                               [s.row_no for s in sigs], ["R3-CAPACITY", "R4-CABLE-BLOCK"],
                                f"Cable {cid} has {size} pairs: bigger than one CIOC (96 slots). "
-                               f"Cable held.",
-                               ["Split the cable across two cable codes."]))
+                               f"Minimal conflict: R3-CAPACITY limits a CIOC to 96 slots; "
+                               f"R4-CABLE-BLOCK keeps this cable atomic. Cable held.",
+                               ["Split the cable across two cable codes."],
+                               mus=["R3-CAPACITY", "R4-CABLE-BLOCK"]))
 
         valid = [s for s in signals if s.tag not in held]
         ledger = {s.tag: ("held:" + held[s.tag] if s.tag in held else "placed") for s in signals}

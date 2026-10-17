@@ -64,6 +64,7 @@ class MapColumnsRequest(BaseModel):
 
 class ParseNLRuleRequest(BaseModel):
     text: str
+    allow_llm: bool = False  # operator opt-in; no effect unless the LLM drafter is configured
 
 class AllocateRequest(BaseModel):
     signals: Optional[List[Signal]] = None
@@ -80,6 +81,11 @@ def _moves_between(prev_allocs, new_allocs) -> int:
     return sum(1 for t, p in prev.items() if t in new and new[t] != p)
 
 
+def _hw_table_for(rules: RuleSetConfig):
+    """Hardware table as data from the rule set (P3); None = in-code default."""
+    return [h.model_dump() for h in rules.hardware_table] if rules.hardware_table else None
+
+
 # Reference-checker rule labels -> repo rule ids (display translation only).
 _RULE_ID_MAP = {"CABLE": "RULE-02", "R1-GROUP": "RULE-03", "R5-SPARE": "RULE-04",
                 "R6-HW": "RULE-06", "COVERAGE": "RULE-00", "CAPACITY": "RULE-04"}
@@ -92,7 +98,6 @@ def _verify_on_export(allocations, signals, cable_sizes, rules, held_tags, waive
     import tempfile as _tf
     from pathlib import Path as _Path
     import checker.check as _chk
-    from app.engine.hardware import HW_TABLE
     from app.engine.solve.bridge import rules_to_ref
     from app.engine.io.template_writer import (
         load_template_map, write_template, rows_from_allocations, allocation_hash)
@@ -111,7 +116,7 @@ def _verify_on_export(allocations, signals, cable_sizes, rules, held_tags, waive
     io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
                 "cable": s.cable, "pair": s.pair, "group": s.group or "",
                 "seg": s.seg or ""} for s in signals]
-    found = _chk.check(io_rows, back, rules_to_ref(rules), HW_TABLE, cable_sizes,
+    found = _chk.check(io_rows, back, rules_to_ref(rules), _hw_table_for(rules), cable_sizes,
                        frozenset(held_tags), frozenset(waived_groups))
     from app.models.domain import Violation
     violations = [Violation(rule_id=_RULE_ID_MAP.get(v["rule"], v["rule"]),
@@ -139,13 +144,41 @@ def get_rules():
         "yaml": current_rules.to_yaml()
     }
 
+@app.get("/api/rules/schema")
+def rules_schema():
+    """The JSON Schema that every rule document is validated against (P3)."""
+    from app.engine.rules.loader import rule_schema
+    return rule_schema()
+
+@app.post("/api/rules/validate")
+def validate_rules(payload: Dict[str, Any]):
+    """Validate a rule document (YAML string or dict) without applying it."""
+    from app.engine.rules.loader import validate_yaml, validate_document, RuleSchemaError
+    if "yaml" in payload and payload["yaml"]:
+        ok, errors = validate_yaml(payload["yaml"])
+        return {"ok": ok, "errors": errors}
+    if "rules" in payload:
+        errors = validate_document(payload["rules"])
+        return {"ok": not errors, "errors": errors}
+    return {"ok": False, "errors": ["provide 'yaml' or 'rules'"]}
+
 @app.post("/api/rules")
 def update_rules(payload: Dict[str, Any]):
     global current_rules
-    if "yaml" in payload and payload["yaml"]:
-        current_rules = RuleSetConfig.from_yaml(payload["yaml"])
-    elif "rules" in payload:
-        current_rules = RuleSetConfig.model_validate(payload["rules"])
+    from app.engine.rules.loader import RuleSchemaError
+    try:
+        if "yaml" in payload and payload["yaml"]:
+            current_rules = RuleSetConfig.from_yaml(payload["yaml"])
+        elif "rules" in payload:
+            from app.engine.rules.loader import validate_document
+            errors = validate_document(payload["rules"])
+            if errors:
+                raise RuleSchemaError(errors)
+            current_rules = RuleSetConfig.model_validate(payload["rules"])
+        else:
+            raise HTTPException(status_code=400, detail="provide 'yaml' or 'rules'")
+    except RuleSchemaError as e:
+        raise HTTPException(status_code=400, detail={"schema_errors": e.errors})
     storage.save_rule_set("active", current_rules.to_yaml())
     return {
         "rules": current_rules.model_dump(),
@@ -154,11 +187,27 @@ def update_rules(payload: Dict[str, Any]):
 
 @app.post("/api/rules/parse-nl")
 def parse_nl_rule(req: ParseNLRuleRequest):
-    draft, msg = RuleAssistant.parse_natural_language_rule(req.text)
+    from app.engine import llm_drafter
+    llm_available = llm_drafter.llm_enabled()
+    # The operator opts into the LLM drafter per request; the deterministic parser
+    # is always the first pass and the fallback, so the offline path never breaks.
+    res = RuleAssistant.draft_rule(req.text, allow_llm=bool(req.allow_llm) and llm_available)
+    draft = res.draft
+    # W3: every draft is schema-validated before it is offered for human confirmation.
+    errors: List[str] = []
+    if draft is not None:
+        from app.engine.rules.loader import validate_document
+        errors = validate_document({"custom_rules": [draft.model_dump()]})
     return {
         "draft": draft.model_dump() if draft else None,
-        "message": msg,
-        "assistant_banner": "Rule Assistant is active for wording syntax only. AI never places signals."
+        "message": res.message,
+        "source": res.source,
+        "confidence": res.confidence,
+        "llm_available": llm_available,
+        "schema_ok": draft is not None and not errors,
+        "schema_errors": errors,
+        "requires_human_confirmation": True,
+        "assistant_banner": "Rule Assistant is active for wording syntax only. AI never places signals.",
     }
 
 @app.post("/api/generate")
@@ -188,7 +237,12 @@ def generate_dataset(req: GenerateRequest):
 def map_columns(req: MapColumnsRequest):
     mapper = ColumnAutoMapper()
     result = mapper.map_columns(req.columns)
-    return result.model_dump()
+    out = result.model_dump()
+    # Mapping profiles: if this header signature was confirmed before, surface it.
+    sig = storage.header_signature(req.columns)
+    profile = storage.find_mapping_profile_by_signature(sig)
+    out["profile_match"] = profile
+    return out
 
 
 class ConfirmMappingRequest(BaseModel):
@@ -196,6 +250,17 @@ class ConfirmMappingRequest(BaseModel):
     sheet: Optional[str] = None
     header_row: Optional[int] = None  # 0-based grid index; auto-detected if omitted
     overrides: Optional[Dict[str, Optional[str]]] = None  # detected header -> canonical (None = ignore)
+    profile_name: Optional[str] = None  # save this mapping under a customer name
+
+
+@app.get("/api/mapping/profiles")
+def list_mapping_profiles():
+    return {"profiles": storage.list_mapping_profiles()}
+
+
+@app.delete("/api/mapping/profiles/{name}")
+def delete_mapping_profile(name: str):
+    return {"deleted": storage.delete_mapping_profile(name)}
 
 
 def _parse_upload_to_signals(raw: bytes, filename: str, overrides=None, sheet=None):
@@ -287,23 +352,32 @@ def confirm_mapping(req: ConfirmMappingRequest):
     h_idx = req.header_row if req.header_row is not None else find_header_row(
         sheet.grid, SYNONYM_DICTIONARY)[0]
     header = sheet.grid[h_idx]
+    sig = storage.header_signature(header)
+    saved_profile = None if req.overrides else storage.find_mapping_profile_by_signature(sig)
     if req.overrides:
         mapping = {h: req.overrides.get(h) for h in header}
+    elif saved_profile:
+        mapping = {h: saved_profile["overrides"].get(h) for h in header}
     else:
         cols = [[row[i] if i < len(row) else "" for _, row in data_rows(sheet.grid, h_idx)]
                 for i in range(len(header))]
         proposal = propose_sheet_mapping(header, cols)
         mapping = {m.detected_column: m.mapped_canonical for m in proposal.matches}
     signals, cable_sizes = apply_mapping(sheet.grid, h_idx, mapping)
+    if req.profile_name and req.overrides:
+        storage.save_mapping_profile(req.profile_name, req.overrides, sig)
 
     session_state["signals_a"] = signals
     session_state["cables_info_a"] = [{"cable_id": c, "size": s} for c, s in cable_sizes.items()]
     session_state["upload_mapping"] = {"upload_id": req.upload_id, "sheet": sheet.name,
-                                       "header_row": h_idx, "mapping": mapping}
+                                       "header_row": h_idx, "mapping": mapping,
+                                       "profile_used": saved_profile["name"] if saved_profile else None}
     return {
         "signal_count": len(signals),
         "cable_count": len({s.cable for s in signals if s.cable}),
         "columns": header,
+        "profile_used": saved_profile["name"] if saved_profile else None,
+        "profile_saved": req.profile_name if (req.profile_name and req.overrides) else None,
         "sample_rows": [dict(zip(header, [s.tag, s.io_type, s.subtype or "", s.cable,
                                           s.pair, cable_sizes.get(s.cable, ""),
                                           s.group or "", s.seg or ""])) for s in signals[:15]],
@@ -387,11 +461,101 @@ def run_allocation(req: AllocateRequest):
 
     return result.model_dump()
 
+@app.get("/api/explain/{tag}")
+def explain_signal_here(tag: str):
+    """W2: why is this signal placed where it is? Deterministic, rule-checked."""
+    from app.engine.explain import explain_signal
+    signals = session_state.get("signals_a") or []
+    alloc = session_state.get("alloc_a")
+    if not signals or not alloc:
+        raise HTTPException(status_code=400, detail="Run an allocation first")
+    io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
+                "cable": s.cable, "pair": s.pair, "group": s.group or "",
+                "seg": s.seg or ""} for s in signals]
+    alloc_rows = [a.model_dump() for a in alloc.allocations]
+    held = frozenset(session_state.get("last_held_tags", []))
+    return explain_signal(tag, io_rows, alloc_rows, current_rules, held)
+
+
+class WhatIfRequest(BaseModel):
+    kind: str = "add_signal"  # 'add_signal' | 'rule_change' | 'spare_change'
+    signals_extra: List[Dict[str, Any]] = []
+    rules: Optional[Dict[str, Any]] = None
+    spare_percentage: Optional[float] = None
+
+
+@app.post("/api/what-if")
+def what_if(req: WhatIfRequest):
+    """W1: score a hypothetical WITHOUT committing it to the session.
+
+    Recomputes in isolation from the committed signals and rules and reports the
+    delta. Never mutates session_state.
+    """
+    from app.engine.rules.loader import validate_document, RuleSchemaError
+    signals = session_state.get("signals_a") or []
+    if not signals:
+        raise HTTPException(status_code=400, detail="Run an allocation first")
+    base = session_state.get("alloc_a")
+    sizes = dict(session_state.get("last_sizes", {}))
+
+    hypo_rules = current_rules
+    if req.rules is not None:
+        errors = validate_document(req.rules)
+        if errors:
+            raise HTTPException(status_code=400, detail={"schema_errors": errors})
+        hypo_rules = RuleSetConfig.model_validate(req.rules)
+    if req.spare_percentage is not None and req.rules is None:
+        hypot = current_rules.model_dump()
+        hypot["spare_capacity"]["spare_percentage"] = req.spare_percentage
+        hypo_rules = RuleSetConfig.model_validate(hypot)
+
+    extra = [Signal(**{k: v for k, v in d.items() if k in Signal.__dataclass_fields__})
+             for d in req.signals_extra]
+    for e in extra:
+        sizes.setdefault(e.cable, max(e.pair, 12))
+    hypo_signals = list(signals) + extra
+
+    v = DataValidator(spare_pct=hypo_rules.spare_capacity.spare_percentage)
+    valid, data_tqs, ledger = v.validate(hypo_signals, sizes)
+    res, _prev, _raw = solve_allocation(valid, sizes, hypo_rules)
+    held = {t for t, val in ledger.items() if val.startswith("held:")}
+    held |= {t for q_ in res.tqs for t in (q_.items or ())}
+    placed = {s.tag for s in res.allocations if s.tag}
+    accounted = sum(1 for s in hypo_signals if s.tag in placed or s.tag in held)
+    coverage = round(100.0 * accounted / max(1, len(hypo_signals)), 1)
+
+    added_locations = []
+    extra_ids = {e.tag for e in extra}
+    for a in res.allocations:
+        if a.tag in extra_ids:
+            added_locations.append({"tag": a.tag, "location":
+                                    f"CAB-{a.cabinet + 1:02d} / CIOC-{a.cioc} / BP-{a.baseplate} / S-{a.slot}",
+                                    "charm": a.charm})
+
+    base_cabs = base.cabinets_used if base else None
+    base_cov = base.coverage_pct if base else None
+    delta_cabs = (res.cabinets_used - base_cabs) if base_cabs is not None else None
+    return {
+        "kind": req.kind,
+        "committed": False,
+        "base": {"cabinets_used": base_cabs, "coverage_pct": base_cov},
+        "hypothetical": {
+            "cabinets_used": res.cabinets_used,
+            "coverage_pct": coverage,
+            "slots_used": res.slots_used,
+            "spare_pct_actual": res.spare_pct_actual,
+            "tq_count": len(res.tqs),
+        },
+        "delta": {"cabinets": delta_cabs, "coverage_pct": round(coverage - base_cov, 1) if base_cov is not None else None},
+        "added_locations": added_locations,
+        "note": "What-if only. The committed allocation and the session were not modified.",
+    }
+
+
 @app.post("/api/check")
 def check_exported():
     """Re-run the independent checker on the last exported workbook bytes."""
     import checker.check as _chk
-    from app.engine.hardware import HW_TABLE
     from app.engine.solve.bridge import rules_to_ref
     from app.engine.io.template_writer import load_template_map, allocation_hash
     from pathlib import Path as _Path
@@ -406,7 +570,7 @@ def check_exported():
     io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
                 "cable": s.cable, "pair": s.pair, "group": s.group or "",
                 "seg": s.seg or ""} for s in signals]
-    found = _chk.check(io_rows, back, rules_to_ref(current_rules), HW_TABLE,
+    found = _chk.check(io_rows, back, rules_to_ref(current_rules), _hw_table_for(current_rules),
                        session_state.get("last_sizes", {}),
                        frozenset(session_state.get("last_held_tags", [])),
                        frozenset(session_state.get("last_waived_groups", [])))
@@ -438,9 +602,8 @@ def plant_violation(req: PlantViolationRequest):
     io_rows = [{"tag": s.tag, "io_type": s.io_type, "subtype": s.subtype or "",
                 "cable": s.cable, "pair": s.pair, "group": s.group or "",
                 "seg": s.seg or ""} for s in signals]
-    from app.engine.hardware import HW_TABLE
     from app.engine.solve.bridge import rules_to_ref
-    found = _chk.check(io_rows, back, rules_to_ref(current_rules), HW_TABLE,
+    found = _chk.check(io_rows, back, rules_to_ref(current_rules), _hw_table_for(current_rules),
                        session_state.get("last_sizes", {}),
                        frozenset(session_state.get("last_held_tags", [])),
                        frozenset(session_state.get("last_waived_groups", [])))

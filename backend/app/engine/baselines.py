@@ -24,7 +24,8 @@ def _verify(allocations, signals, cable_sizes, rules):
                 "cable": s.cable, "pair": s.pair, "group": s.group or "",
                 "seg": s.seg or ""} for s in signals]
     rows = rows_from_allocations(allocations)
-    return _chk.check(io_rows, rows, rules_to_ref(rules), HW_TABLE, cable_sizes)
+    ref = rules_to_ref(rules)
+    return _chk.check(io_rows, rows, ref, ref.get("hardware_table") or HW_TABLE, cable_sizes)
 
 
 def _to_violations(found):

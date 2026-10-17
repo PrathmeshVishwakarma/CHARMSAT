@@ -24,6 +24,8 @@ export const ScreenUploadMapping: React.FC<UploadMappingProps> = ({
   const [sheetIdx, setSheetIdx] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [profileName, setProfileName] = useState<string>('');
+  const [profileMatch, setProfileMatch] = useState<any | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const CANONICAL_FIELDS = [
@@ -60,6 +62,7 @@ export const ScreenUploadMapping: React.FC<UploadMappingProps> = ({
       // Auto-map columns with rapidfuzz API
       const mapRes = await API.mapColumns(data.columns);
       setMappingResults(mapRes.matches);
+      setProfileMatch(mapRes.profile_match || null);
 
       onDataLoaded(data.raw_signals, data.cable_sizes);
     } catch (err) {
@@ -114,6 +117,7 @@ export const ScreenUploadMapping: React.FC<UploadMappingProps> = ({
           upload_id: uploadId,
           sheet: sheets[sheetIdx]?.name,
           overrides,
+          profile_name: profileName.trim() || undefined,
         });
         onDataLoaded(confirmed.raw_signals, confirmed.cable_sizes);
         setLoadedSummary((s: any) => ({ ...s, signals: confirmed.signal_count, cables: confirmed.cable_count }));
@@ -277,7 +281,22 @@ export const ScreenUploadMapping: React.FC<UploadMappingProps> = ({
             </div>
           )}
 
-          <div className="flex justify-end pt-2 border-t border-[#1A3624]">
+          <div className="flex items-center justify-between gap-3 pt-2 border-t border-[#1A3624]">
+            <div className="flex items-center gap-2 text-xs font-mono">
+              <span className="text-[#6B8E78]">SAVE AS PROFILE:</span>
+              <input
+                type="text"
+                value={profileName}
+                onChange={(e) => setProfileName(e.target.value)}
+                placeholder="e.g. CUSTOMER_ACME"
+                className="bg-[#0E1E14] border border-[#1E3E2B] text-white text-xs font-mono rounded-lg px-3 py-1.5 focus:outline-none focus:border-[#4ADE80] w-44"
+              />
+              {profileMatch && (
+                <span className="text-[10px] text-[#38BDF8]">
+                  saved profile "{profileMatch.name}" matches these headers
+                </span>
+              )}
+            </div>
             <button
               onClick={handleConfirm}
               disabled={!loadedSummary || isLoading}
