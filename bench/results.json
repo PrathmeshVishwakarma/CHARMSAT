@@ -5,8 +5,8 @@
   "cpu_count": 8,
   "python": "3.10.13",
   "ortools": "9.15.6755",
-  "commit": "e0ab872",
-  "date": "2026-10-16T20:00:36.313169+00:00"
+  "commit": "4052034",
+  "date": "2026-10-17T14:51:18.432574+00:00"
  },
  "table": [
   {
@@ -30,7 +30,7 @@
    "gap": -1,
    "rev_b_moves": null,
    "rev_b_scratch": null,
-   "runtime_s": 0.02,
+   "runtime_s": 0.03,
    "verdict": "FAIL (Violates Rules)"
   },
   {
@@ -42,7 +42,7 @@
    "gap": 0,
    "rev_b_moves": 24,
    "rev_b_scratch": 971,
-   "runtime_s": 0.06,
+   "runtime_s": 0.07,
    "verdict": "OPTIMAL (matches lower bound)"
   },
   {
@@ -78,7 +78,7 @@
    "gap": 1,
    "rev_b_moves": 473,
    "rev_b_scratch": 4641,
-   "runtime_s": 9.19,
+   "runtime_s": 9.22,
    "verdict": "GAP 1"
   },
   {
@@ -114,7 +114,7 @@
    "gap": 1,
    "rev_b_moves": 1141,
    "rev_b_scratch": 8972,
-   "runtime_s": 8.43,
+   "runtime_s": 8.53,
    "verdict": "GAP 1"
   }
  ],
@@ -122,20 +122,20 @@
   {
    "signals": 1000,
    "b0": 0.01,
-   "b1": 0.02,
-   "charmsat": 0.06
+   "b1": 0.03,
+   "charmsat": 0.07
   },
   {
    "signals": 5000,
    "b0": 0.05,
    "b1": 0.06,
-   "charmsat": 9.19
+   "charmsat": 9.22
   },
   {
    "signals": 10000,
    "b0": 0.11,
    "b1": 0.15,
-   "charmsat": 8.43
+   "charmsat": 8.53
   }
  ]
 }

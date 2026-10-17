@@ -62,7 +62,7 @@
 - **Action:** Navigate to `Screen 5: Technical Queries (TQs)`.
 - **Action:** Click **"LOAD ADVERSARIAL CONFLICT FILE"**.
 - **Showcase:**
-  - Explain: *"When real-world data is contradictory, CHARMSAT never crashes or silently drops signals. It raises a TQ naming the conflicting rules."* (Minimal-unsatisfiable-subset wording is planned, P4-1.)
+  - Explain: *"When real-world data is contradictory, CHARMSAT never crashes or silently drops signals. It raises a TQ naming the conflicting rules and the minimal set that cannot all hold (the MUS)."*
   - Expand the conflict TQ: show the plain-English explanation naming the cable, the rules, and the fix options.
 
 ---
@@ -93,3 +93,27 @@
 
 ### [3:50 – 4:00] Conclusion
 - *"In summary: CHARMSAT gives EPCs and plant owners guaranteed zero-violation allocations, plain-English TQs, and minimum-move revisions that prevent physical rewiring. Thank you!"*
+
+---
+
+## Optional WOW detours (if time allows)
+
+- **Live-added rule (Screen 2):** add a custom rule in the panel (relation /
+  attribute / level / k / classes), watch the YAML box and the schema badge.
+  Type a typo in the YAML box → the badge turns red with the schema errors and
+  SAVE is refused. Fix it, SAVE, and the allocation re-solves with the new
+  rule — no code change.
+- **Rule assistant (Screen 2):** type *"keep each group on one cabinet"* →
+  the offline assistant drafts a typed rule (schema-validated, human-confirm).
+  Stress: it only drafts wording; it never receives IO rows or places signals.
+  Each draft shows its provenance badge (OFFLINE PARSER). Only if an API key is
+  configured can you tick *"Use optional LLM drafter"* for a messy sentence — the
+  badge then says LLM DRAFT (non-reproducible) and the draft still must pass the
+  schema and be confirmed by you. Default demo path needs no key and no network.
+- **What-if (Screen 3):** add one signal or drop the spare margin → the panel
+  recomputes cabinets/coverage live and states plainly it did not commit.
+- **Why is this here (Screen 3):** click any CHARM → the explainer re-derives
+  the rules that slot satisfies and which rule pins it.
+- **Mapping profile (Screen 1):** name and save the mapping, then confirm a
+  second file with the same headers — it reuses the saved profile.
+
